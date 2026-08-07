@@ -1,0 +1,383 @@
+/*
+ * This file is part of AirReceiver / DroidAirPlay (GPL-3.0).
+ *
+ * AirReceiver is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * AirReceiver is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with AirReceiver.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+package nz.co.iswe.android.airplay;
+
+import java.io.IOException;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
+import java.net.UnknownHostException;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+import javax.jmdns.JmDNS;
+import javax.jmdns.ServiceInfo;
+
+import nz.co.iswe.android.airplay.audio.RaopAudioHandler;
+import nz.co.iswe.android.airplay.network.NetworkUtils;
+import nz.co.iswe.android.airplay.network.raop.RaopRtspPipelineFactory;
+
+import org.jboss.netty.bootstrap.ServerBootstrap;
+import org.jboss.netty.channel.ChannelHandler;
+import org.jboss.netty.channel.group.ChannelGroup;
+import org.jboss.netty.channel.group.ChannelGroupFuture;
+import org.jboss.netty.channel.group.DefaultChannelGroup;
+import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
+import org.jboss.netty.handler.execution.ExecutionHandler;
+import org.jboss.netty.handler.execution.OrderedMemoryAwareThreadPoolExecutor;
+
+/**
+ * AirTunes/RAOP (AirPlay 1) server.
+ *
+ * Adapted from DroidAirPlay / AirReceiver. This version can be started and
+ * stopped multiple times, advertises a configurable device name over mDNS and
+ * reports playback session events through {@link AirPlayListener}.
+ */
+public class AirPlayServer implements Runnable {
+
+	private static final Logger LOG = Logger.getLogger(AirPlayServer.class.getName());
+
+	/**
+	 * The AirTunes/RAOP service type
+	 */
+	static final String AIR_TUNES_SERVICE_TYPE = "_raop._tcp.local.";
+
+	/**
+	 * The AirTunes/RAOP M-DNS service properties (TXT record).
+	 * cn=0,1 advertises PCM + Apple Lossless, which makes iOS send ALAC.
+	 */
+	static final Map<String, String> AIRTUNES_SERVICE_PROPERTIES = map(
+		"txtvers", "1",
+		"tp", "UDP",
+		"ch", "2",
+		"ss", "16",
+		"sr", "44100",
+		"pw", "false",
+		"sm", "false",
+		"sv", "false",
+		"ek", "1",
+		"et", "0,1",
+		"cn", "0,1",
+		"vn", "3"
+	);
+
+	private static AirPlayServer instance;
+
+	/** Listener for playback session events (start/pause/stop/volume). */
+	private volatile AirPlayListener listener;
+
+	/** Device name shown to AirPlay senders. */
+	private volatile String deviceName = "Android音箱";
+
+	/** The AirTunes/RAOP RTSP port. */
+	private int rtspPort = 5000;
+
+	/** Global executor service. */
+	protected ExecutorService executorService;
+
+	/** Channel execution handler. */
+	protected ExecutionHandler channelExecutionHandler;
+
+	/** All open RTSP channels. */
+	protected ChannelGroup channelGroup;
+
+	/** JmDNS responders (one per network interface). */
+	protected List<JmDNS> jmDNSInstances;
+
+	/** The RTSP server bootstrap. */
+	private ServerBootstrap rtspBootstrap;
+
+	/** The RTSP server channel. */
+	private org.jboss.netty.channel.Channel rtspChannel;
+
+	/** Currently active audio handler (per RTSP connection). */
+	private volatile RaopAudioHandler currentAudioHandler;
+
+	/** Left/right balance, -1 = full left, 0 = center, +1 = full right. */
+	private volatile float balance;
+
+	/** Extra output gain in [0, 1] for smooth volume transitions. */
+	private volatile float volumeGain = 1.0f;
+
+	private boolean started;
+
+	public static AirPlayServer getInstance() {
+		return getIstance();
+	}
+
+	public static AirPlayServer getIstance() {
+		if (instance == null) {
+			instance = new AirPlayServer();
+		}
+		return instance;
+	}
+
+	private AirPlayServer() {
+		jmDNSInstances = new java.util.LinkedList<JmDNS>();
+	}
+
+	public void setListener(final AirPlayListener listener) {
+		this.listener = listener;
+	}
+
+	public AirPlayListener getListener() {
+		return listener;
+	}
+
+	public void setDeviceName(final String deviceName) {
+		if (deviceName != null && deviceName.trim().length() > 0) {
+			this.deviceName = deviceName.trim();
+		}
+	}
+
+	public String getDeviceName() {
+		return deviceName;
+	}
+
+	public int getRtspPort() {
+		return rtspPort;
+	}
+
+	public void setRtspPort(final int rtspPort) {
+		this.rtspPort = rtspPort;
+	}
+
+	public boolean isStarted() {
+		return started;
+	}
+
+	/**
+	 * Starts the RTSP server and registers the mDNS service. Safe to call
+	 * multiple times; repeated calls while running are ignored.
+	 */
+	public synchronized void startService() {
+		if (started) {
+			LOG.info("AirPlay server already started");
+			return;
+		}
+
+		executorService = Executors.newCachedThreadPool();
+		channelExecutionHandler = new ExecutionHandler(new OrderedMemoryAwareThreadPoolExecutor(4, 0, 0));
+		channelGroup = new DefaultChannelGroup();
+
+		final ServerBootstrap bootstrap = new ServerBootstrap(
+			new NioServerSocketChannelFactory(executorService, executorService));
+		bootstrap.setPipelineFactory(new RaopRtspPipelineFactory());
+		bootstrap.setOption("reuseAddress", true);
+		bootstrap.setOption("child.tcpNoDelay", true);
+		bootstrap.setOption("child.keepAlive", true);
+
+		try {
+			rtspChannel = bootstrap.bind(new InetSocketAddress(Inet4Address.getByName("0.0.0.0"), rtspPort));
+			channelGroup.add(rtspChannel);
+			rtspBootstrap = bootstrap;
+			LOG.info("Launched RTSP service on port " + rtspPort);
+		} catch (final UnknownHostException e) {
+			LOG.log(Level.SEVERE, "Failed to bind RTSP bootstrap on port " + rtspPort, e);
+		}
+
+		registerMdns();
+		started = true;
+	}
+
+	private void registerMdns() {
+		final NetworkUtils networkUtils = NetworkUtils.getInstance();
+		final String hardwareAddressString = networkUtils.getHardwareAddressString();
+		final String serviceName = hardwareAddressString + "@" + deviceName;
+
+		try {
+			synchronized (jmDNSInstances) {
+				for (final NetworkInterface iface : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+					if (iface.isLoopback() || iface.isPointToPoint() || !iface.isUp()) {
+						continue;
+					}
+					for (final InetAddress addr : Collections.list(iface.getInetAddresses())) {
+						if (!(addr instanceof Inet4Address) && !(addr instanceof Inet6Address)) {
+							continue;
+						}
+						try {
+							final JmDNS jmDNS = JmDNS.create(addr, serviceName + "-jmdns");
+							jmDNSInstances.add(jmDNS);
+							final ServiceInfo airTunesServiceInfo = ServiceInfo.create(
+								AIR_TUNES_SERVICE_TYPE,
+								serviceName,
+								rtspPort,
+								0, 0,
+								AIRTUNES_SERVICE_PROPERTIES);
+							jmDNS.registerService(airTunesServiceInfo);
+							LOG.info("Registered AirTunes service '" + airTunesServiceInfo.getName() + "' on " + addr);
+						} catch (final Throwable e) {
+							LOG.log(Level.SEVERE, "Failed to publish service on " + addr, e);
+						}
+					}
+				}
+			}
+		} catch (final SocketException e) {
+			LOG.log(Level.SEVERE, "Failed to register mDNS services", e);
+		}
+	}
+
+	/**
+	 * Stops the RTSP server and unregisters mDNS services. Safe to call when
+	 * not running.
+	 */
+	public synchronized void stopService() {
+		if (!started) {
+			return;
+		}
+
+		if (currentAudioHandler != null) {
+			try {
+				currentAudioHandler.stopSession();
+			} catch (final Throwable t) {
+				LOG.log(Level.WARNING, "Failed to stop active audio session", t);
+			}
+			currentAudioHandler = null;
+		}
+
+		ChannelGroupFuture allChannelsClosed = null;
+		if (channelGroup != null) {
+			allChannelsClosed = channelGroup.close();
+		}
+
+		synchronized (jmDNSInstances) {
+			for (final JmDNS jmDNS : jmDNSInstances) {
+				try {
+					jmDNS.unregisterAllServices();
+					jmDNS.close();
+					LOG.info("Unregistered services on " + jmDNS.getInterface());
+				} catch (final IOException e) {
+					LOG.log(Level.WARNING, "Failed to unregister some services", e);
+				}
+			}
+			jmDNSInstances.clear();
+		}
+
+		if (allChannelsClosed != null) {
+			allChannelsClosed.awaitUninterruptibly();
+		}
+		if (executorService != null) {
+			executorService.shutdown();
+		}
+		if (channelExecutionHandler != null) {
+			channelExecutionHandler.releaseExternalResources();
+		}
+		channelExecutionHandler = null;
+		executorService = null;
+		channelGroup = null;
+		rtspChannel = null;
+		rtspBootstrap = null;
+		started = false;
+		LOG.info("AirPlay server stopped");
+	}
+
+	/** Registers the audio handler of the current RTSP connection. */
+	public void attachAudioHandler(final RaopAudioHandler handler) {
+		this.currentAudioHandler = handler;
+		if (handler != null) {
+			handler.setBalance(balance);
+			handler.setVolumeGain(volumeGain);
+		}
+	}
+
+	/**
+	 * Sets the left/right balance for the receiver output and applies it to
+	 * the active session.
+	 */
+	public void setBalance(final float balance) {
+		this.balance = Math.max(-1.0f, Math.min(1.0f, balance));
+		final RaopAudioHandler handler = currentAudioHandler;
+		if (handler != null) {
+			handler.setBalance(this.balance);
+		}
+	}
+
+	public float getBalance() {
+		return balance;
+	}
+
+	/** Sets an extra output gain in [0, 1] (fade control). */
+	public void setVolumeGain(final float gain) {
+		this.volumeGain = Math.max(0.0f, Math.min(1.0f, gain));
+		final RaopAudioHandler handler = currentAudioHandler;
+		if (handler != null) {
+			handler.setVolumeGain(this.volumeGain);
+		}
+	}
+
+	/** Ends the active AirPlay session (closes the RTSP connection). */
+	public void disconnectSession() {
+		final RaopAudioHandler handler = currentAudioHandler;
+		if (handler != null) {
+			handler.disconnectSession();
+		}
+	}
+
+	/**
+	 * Pauses the receiver-side audio output (used by the app UI when the user
+	 * pauses an AirPlay session locally).
+	 */
+	public void pauseReceiverOutput() {
+		final RaopAudioHandler handler = currentAudioHandler;
+		if (handler != null) {
+			handler.pauseReceiverOutput();
+		}
+	}
+
+	/** Resumes the receiver-side audio output. */
+	public void resumeReceiverOutput() {
+		final RaopAudioHandler handler = currentAudioHandler;
+		if (handler != null) {
+			handler.resumeReceiverOutput();
+		}
+	}
+
+	@Override
+	public void run() {
+		startService();
+	}
+
+	public ChannelHandler getChannelExecutionHandler() {
+		return channelExecutionHandler;
+	}
+
+	public ChannelGroup getChannelGroup() {
+		return channelGroup;
+	}
+
+	public ExecutorService getExecutorService() {
+		return executorService;
+	}
+
+	private static Map<String, String> map(final String... keysValues) {
+		assert keysValues.length % 2 == 0;
+		final Map<String, String> map = new java.util.HashMap<String, String>(keysValues.length / 2);
+		for (int i = 0; i < keysValues.length; i += 2) {
+			map.put(keysValues[i], keysValues[i + 1]);
+		}
+		return Collections.unmodifiableMap(map);
+	}
+}
