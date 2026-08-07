@@ -403,9 +403,13 @@ public class PlaybackService extends Service {
             return;
         }
         if (state.source == PlayerUiState.Source.LOCAL) {
-            if (localPlayer.isPlaying()) {
+            if (state.playing) {
+                state.playing = false;
+                publish();
                 fadeLocalOut(localPlayer::pause);
             } else {
+                state.playing = true;
+                publish();
                 localPlayer.setMasterGain(0f);
                 localPlayer.play();
                 fadeLocalIn();
@@ -420,7 +424,9 @@ public class PlaybackService extends Service {
 
     public void pausePlayback() {
         if (state.source == PlayerUiState.Source.LOCAL) {
-            if (localPlayer.isPlaying()) {
+            if (state.playing) {
+                state.playing = false;
+                publish();
                 fadeLocalOut(localPlayer::pause);
             }
         } else if (state.source == PlayerUiState.Source.AIRPLAY && state.playing) {
