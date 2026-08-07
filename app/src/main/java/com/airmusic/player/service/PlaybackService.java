@@ -187,6 +187,7 @@ public class PlaybackService extends Service {
     // Smooth volume transitions when switching between local and AirPlay
     private float localFade = 1f;
     private Runnable fadeRunnable;
+    private Runnable airFadeRunnable;
 
     private final LocalPlayer.Listener localListener = new LocalPlayer.Listener() {
         @Override
@@ -336,6 +337,7 @@ public class PlaybackService extends Service {
         saveLastTrack();
         if (ticker != null) main.removeCallbacks(ticker);
         cancelFade();
+        cancelAirFade();
         if (airPlayController != null) airPlayController.stop();
         main.removeCallbacks(airPlayStatusPoller);
         if (dacpClient != null) {
@@ -375,9 +377,10 @@ public class PlaybackService extends Service {
         }
         if (index < 0) return;
         state.source = PlayerUiState.Source.LOCAL;
-        localPlayer.setMasterGain(1f);
+        localPlayer.setMasterGain(0f);
         localPlayer.setPlaylist(tracks, index);
         localPlayer.play();
+        fadeLocalIn();
         loadMetadata(localPlayer.getCurrentTrack());
     }
 
@@ -401,10 +404,11 @@ public class PlaybackService extends Service {
         }
         if (state.source == PlayerUiState.Source.LOCAL) {
             if (localPlayer.isPlaying()) {
-                localPlayer.pause();
+                fadeLocalOut(localPlayer::pause);
             } else {
-                localPlayer.setMasterGain(1f);
+                localPlayer.setMasterGain(0f);
                 localPlayer.play();
+                fadeLocalIn();
             }
             return;
         }
@@ -416,7 +420,9 @@ public class PlaybackService extends Service {
 
     public void pausePlayback() {
         if (state.source == PlayerUiState.Source.LOCAL) {
-            localPlayer.pause();
+            if (localPlayer.isPlaying()) {
+                fadeLocalOut(localPlayer::pause);
+            }
         } else if (state.source == PlayerUiState.Source.AIRPLAY && state.playing) {
             pauseAirPlay();
         }
@@ -545,6 +551,7 @@ public class PlaybackService extends Service {
 	}
 
     private void handleAirPlayPause() {
+        cancelAirFade();
         DiagnosticLog.i(TAG, "AirPlay session pause (userPaused=" + airPlayUserPaused
                 + ", resumeLocal=" + resumeLocalAfterAirPlay + ")");
         state.airPlayPaused = true;
@@ -585,6 +592,7 @@ public class PlaybackService extends Service {
 	}
 
 	private void handleAirPlayStop() {
+		cancelAirFade();
 		DiagnosticLog.i(TAG, "AirPlay session stop (resumeLocal=" + resumeLocalAfterAirPlay + ")");
 		airPlaySessionActive = false;
 		airPlayUserPaused = false;
@@ -618,12 +626,12 @@ public class PlaybackService extends Service {
 
 	/**
 	 * Fades the local player volume down to zero, then runs {@code onDone}
-	 * (usually pause). Total duration ~2000 ms.
+	 * (usually pause). Total duration 2500 ms.
 	 */
 	private void fadeLocalOut(Runnable onDone) {
 		cancelFade();
-		localFade = 1f;
-		final long durationMs = 2000;
+		final float start = localFade;
+		final long durationMs = 2500;
 		final long stepMs = 25;
 		final int steps = (int) (durationMs / stepMs);
 		final float[] stepCount = {0};
@@ -631,7 +639,7 @@ public class PlaybackService extends Service {
 			@Override
 			public void run() {
 				stepCount[0]++;
-				localFade = Math.max(0f, 1f - stepCount[0] / (float) steps);
+				localFade = Math.max(0f, start * (1f - stepCount[0] / (float) steps));
 				localPlayer.setMasterGain(localFade);
 				if (stepCount[0] >= steps) {
 					localFade = 0f;
@@ -646,11 +654,11 @@ public class PlaybackService extends Service {
 		main.post(fadeRunnable);
 	}
 
-	/** Fades the local player volume from zero back up to full (~2500 ms). */
+	/** Fades the local player volume up to full (2000 ms). */
 	private void fadeLocalIn() {
 		cancelFade();
 		localFade = 0f;
-		final long durationMs = 2500;
+		final long durationMs = 2000;
 		final long stepMs = 25;
 		final int steps = (int) (durationMs / stepMs);
 		final float[] stepCount = {0};
@@ -672,13 +680,14 @@ public class PlaybackService extends Service {
 		main.post(fadeRunnable);
 	}
 
-	/** Fades the AirPlay receiver output gain from zero up to full (~2500 ms). */
+	/** Fades the AirPlay receiver output gain from zero up to full (2000 ms). */
 	private void fadeAirPlayIn() {
-		final long durationMs = 2500;
+		cancelAirFade();
+		final long durationMs = 2000;
 		final long stepMs = 25;
 		final int steps = (int) (durationMs / stepMs);
 		final float[] stepCount = {0};
-		final Runnable step = new Runnable() {
+		airFadeRunnable = new Runnable() {
 			@Override
 			public void run() {
 				stepCount[0]++;
@@ -686,18 +695,51 @@ public class PlaybackService extends Service {
 				airPlayController.setVolumeGain(gain);
 				if (stepCount[0] >= steps) {
 					airPlayController.setVolumeGain(1f);
+					airFadeRunnable = null;
 					return;
 				}
 				main.postDelayed(this, stepMs);
 			}
 		};
-		main.post(step);
+		main.post(airFadeRunnable);
+	}
+
+	/** Fades the AirPlay receiver output gain down to zero (2500 ms), then runs {@code onDone}. */
+	private void fadeAirPlayOut(Runnable onDone) {
+		cancelAirFade();
+		final long durationMs = 2500;
+		final long stepMs = 25;
+		final int steps = (int) (durationMs / stepMs);
+		final float[] stepCount = {0};
+		airFadeRunnable = new Runnable() {
+			@Override
+			public void run() {
+				stepCount[0]++;
+				float gain = Math.max(0f, 1f - stepCount[0] / (float) steps);
+				airPlayController.setVolumeGain(gain);
+				if (stepCount[0] >= steps) {
+					airPlayController.setVolumeGain(0f);
+					airFadeRunnable = null;
+					if (onDone != null) onDone.run();
+					return;
+				}
+				main.postDelayed(this, stepMs);
+			}
+		};
+		main.post(airFadeRunnable);
 	}
 
 	private void cancelFade() {
 		if (fadeRunnable != null) {
 			main.removeCallbacks(fadeRunnable);
 			fadeRunnable = null;
+		}
+	}
+
+	private void cancelAirFade() {
+		if (airFadeRunnable != null) {
+			main.removeCallbacks(airFadeRunnable);
+			airFadeRunnable = null;
 		}
 	}
 
@@ -714,33 +756,38 @@ public class PlaybackService extends Service {
 	}
 
     /**
-     * Pauses AirPlay playback: tells the sender (via DACP) to pause so the
-     * phone actually stops, and mutes the receiver as a safety net.
+     * Pauses AirPlay playback with a 2500 ms fade-out, then tells the sender
+     * (via DACP) to pause and mutes the receiver as a safety net.
      */
     private void pauseAirPlay() {
         airPlayUserPaused = true;
         state.receiverPausedByUser = true;
-        airPlayController.pauseReceiverOutput();
-        if (dacpClient != null) {
-            dacpClient.playPause();
-        }
         state.playing = false;
         publish();
+        fadeAirPlayOut(() -> {
+            airPlayController.pauseReceiverOutput();
+            if (dacpClient != null) {
+                dacpClient.playPause();
+            }
+        });
     }
 
     /**
-     * Resumes AirPlay playback: unmutes the receiver and tells the sender to
-     * resume via DACP.
+     * Resumes AirPlay playback with a 2000 ms fade-in: tells the sender to
+     * resume via DACP and unmutes the receiver.
      */
     private void resumeAirPlay() {
+        cancelAirFade();
         airPlayUserPaused = false;
         state.receiverPausedByUser = false;
+        airPlayController.setVolumeGain(0f);
         airPlayController.resumeReceiverOutput();
         if (dacpClient != null) {
             dacpClient.playPause();
         }
         state.playing = true;
         publish();
+        fadeAirPlayIn();
     }
 
     // ------------------------------------------------------------------
