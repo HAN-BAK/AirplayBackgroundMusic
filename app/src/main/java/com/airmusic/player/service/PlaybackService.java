@@ -38,6 +38,7 @@ import com.airmusic.player.receiver.UsbMediaReceiver;
 import com.airmusic.player.util.PlayerUiState;
 import com.airmusic.player.util.Prefs;
 import com.airmusic.player.util.StateBus;
+import com.airmusic.player.util.DiagnosticLog;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -163,6 +164,8 @@ public class PlaybackService extends Service {
                     && !state.receiverPausedByUser) {
                 Log.i(TAG, "AirPlay audio stalled " + (now - lastPacket)
                         + "ms, treating as phone-side pause");
+                DiagnosticLog.i(TAG, "AirPlay audio stalled " + (now - lastPacket)
+                        + "ms, treating as phone-side pause");
                 airPlayWatchdogPaused = true;
                 handleAirPlayPause();
             }
@@ -171,6 +174,7 @@ public class PlaybackService extends Service {
 
         if (airPlayWatchdogPaused) {
             Log.i(TAG, "AirPlay audio flowing again, phone resumed");
+            DiagnosticLog.i(TAG, "AirPlay audio flowing again, phone resumed");
             airPlayWatchdogPaused = false;
             if (state.source == PlayerUiState.Source.AIRPLAY && !state.playing) {
                 handleAirPlayStart(state.clientName, "", "", "", false);
@@ -243,6 +247,7 @@ public class PlaybackService extends Service {
         super.onCreate();
         instance = this;
         prefs = new Prefs(this);
+        DiagnosticLog.init(this);
         createNotificationChannel();
 
         state = new PlayerUiState();
@@ -472,6 +477,7 @@ public class PlaybackService extends Service {
     }
 
     public void restartAirPlay() {
+        DiagnosticLog.i(TAG, "restartAirPlay requested from UI");
         airPlayController.restart(prefs.getAirPlayName());
     }
 
@@ -487,11 +493,18 @@ public class PlaybackService extends Service {
         return mediaSession == null ? null : mediaSession.getSessionToken();
     }
 
+    /** Returns the current AirPlay service status for the settings screen. */
+    public String getAirPlayStatus() {
+        if (airPlayController == null) return "service: not initialized";
+        return airPlayController.getStatusText();
+    }
+
     // ------------------------------------------------------------------
     // AirPlay session handling (source switching rules)
     // ------------------------------------------------------------------
 
     private void handleAirPlayStart(String clientName, String dacpId, String activeRemote, String remoteIp, boolean newSession) {
+        DiagnosticLog.i(TAG, "AirPlay session start (new=" + newSession + ", client=" + clientName + ")");
         airPlaySessionActive = true;
         airPlayUserPaused = false;
         airPlayWatchdogPaused = false;
@@ -532,6 +545,8 @@ public class PlaybackService extends Service {
 	}
 
     private void handleAirPlayPause() {
+        DiagnosticLog.i(TAG, "AirPlay session pause (userPaused=" + airPlayUserPaused
+                + ", resumeLocal=" + resumeLocalAfterAirPlay + ")");
         state.airPlayPaused = true;
         // A pause requested from our own UI keeps AirPlay paused; a pause
         // initiated by the sender auto-resumes the local background music.
@@ -570,6 +585,7 @@ public class PlaybackService extends Service {
 	}
 
 	private void handleAirPlayStop() {
+		DiagnosticLog.i(TAG, "AirPlay session stop (resumeLocal=" + resumeLocalAfterAirPlay + ")");
 		airPlaySessionActive = false;
 		airPlayUserPaused = false;
 		airPlayWatchdogPaused = false;

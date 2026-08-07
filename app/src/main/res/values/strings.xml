@@ -70,4 +70,10 @@
     <string name="engine_restarting">设置已保存，AirPlay 服务正在重启…</string>
     <string name="pref_set_home">设为桌面（默认主页）</string>
     <string name="home_settings_unavailable">当前设备不支持直接打开桌面设置，请到系统设置中手动选择默认桌面</string>
+    <string name="pref_diagnostic">诊断</string>
+    <string name="airplay_status_hint">AirPlay 服务状态（开机后若 iPhone 搜不到设备，请先查看这里）</string>
+    <string name="export_logs">导出诊断日志</string>
+    <string name="logs_empty">暂时没有诊断日志</string>
+    <string name="export_logs_failed">导出日志失败</string>
+    <string name="export_logs_share">分享诊断日志</string>
 </resources>

@@ -12,9 +12,11 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.airmusic.player.util.AndroidLogHandler;
+import com.airmusic.player.util.DiagnosticLog;
 
 import androidx.core.content.ContextCompat;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -48,6 +50,7 @@ public class AirPlayController {
     private final Context context;
     private final Events events;
     private final AtomicBoolean started = new AtomicBoolean(false);
+    private final AtomicInteger restartCount = new AtomicInteger(0);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WifiManager.MulticastLock multicastLock;
     private Thread engineThread;
@@ -62,7 +65,7 @@ public class AirPlayController {
         @Override
         public void run() {
             if (started.get() && !isAirPlayRunning()) {
-                Log.i(TAG, "Network ready, restarting AirPlay service");
+                DiagnosticLog.i(TAG, "Network ready, restarting AirPlay service");
                 restart(deviceName);
             }
         }
@@ -76,7 +79,7 @@ public class AirPlayController {
         @Override
         public void run() {
             if (started.get() && !isAirPlayRunning() && isNetworkAvailable()) {
-                Log.w(TAG, "AirPlay service not healthy, restarting");
+                DiagnosticLog.w(TAG, "AirPlay service not healthy, restarting");
                 restart(deviceName);
             }
             handler.postDelayed(this, HEALTH_CHECK_INTERVAL_MS);
@@ -92,7 +95,7 @@ public class AirPlayController {
     private static void installLogging() {
         try {
             Logger.getLogger("").addHandler(new AndroidLogHandler());
-            Logger.getLogger("nz.co.iswe.android.airplay").setLevel(Level.WARNING);
+            Logger.getLogger("nz.co.iswe.android.airplay").setLevel(Level.INFO);
             Logger.getLogger("org.phlo.AirReceiver").setLevel(Level.WARNING);
             Logger.getLogger("javax.jmdns").setLevel(Level.WARNING);
         } catch (Throwable t) {
@@ -148,9 +151,9 @@ public class AirPlayController {
 		engineThread = new Thread(() -> {
 			try {
 				server.startService();
-				Log.i(TAG, "AirPlay engine started");
+				DiagnosticLog.i(TAG, "AirPlay engine started");
 			} catch (Throwable t) {
-				Log.e(TAG, "Failed to start AirPlay engine", t);
+				DiagnosticLog.e(TAG, "Failed to start AirPlay engine: " + t);
 			}
 		}, "airplay-engine");
 		engineThread.start();
@@ -163,7 +166,7 @@ public class AirPlayController {
 		try {
 			AirPlayServer.getIstance().stopService();
 		} catch (Throwable t) {
-            Log.w(TAG, "stop failed", t);
+            DiagnosticLog.w(TAG, "stop failed: " + t);
         }
         if (multicastLock != null && multicastLock.isHeld()) {
             try {
@@ -176,7 +179,8 @@ public class AirPlayController {
 		started.set(false);
 	}
 
-    public synchronized void restart(String deviceName) {
+	public synchronized void restart(String deviceName) {
+		restartCount.incrementAndGet();
         stop();
         start(deviceName);
     }
@@ -259,10 +263,25 @@ public class AirPlayController {
 
 	private void onConnectivityChanged() {
 		if (started.get() && !isAirPlayRunning() && isNetworkAvailable()) {
-			Log.i(TAG, "Network available, scheduling AirPlay restart");
+			DiagnosticLog.i(TAG, "Network available, scheduling AirPlay restart");
 			handler.removeCallbacks(delayedRestart);
 			handler.postDelayed(delayedRestart, RESTART_DELAY_MS);
 		}
+	}
+
+	/**
+	 * Human-readable status of the AirPlay service, used by the settings
+	 * screen to show whether the receiver is really discoverable.
+	 */
+	public String getStatusText() {
+		AirPlayServer server = AirPlayServer.getIstance();
+		StringBuilder sb = new StringBuilder();
+		sb.append("service: ").append(started.get() ? "running" : "stopped").append('\n');
+		sb.append("rtsp: ").append(server.isRtspBound() ? "bound" : "not bound").append('\n');
+		sb.append("mdns: ").append(server.isMdnsRegistered() ? "registered" : "not registered").append('\n');
+		sb.append("network: ").append(isNetworkAvailable() ? "connected" : "disconnected").append('\n');
+		sb.append("auto restarts: ").append(restartCount.get());
+		return sb.toString();
 	}
 
 	/** Ends the active AirPlay session so the app can take playback back. */

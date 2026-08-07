@@ -1,6 +1,7 @@
 package com.airmusic.player;
 
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.widget.RadioGroup;
@@ -13,10 +14,14 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.FileProvider;
 
 import com.airmusic.player.service.PlaybackService;
+import com.airmusic.player.util.DiagnosticLog;
 import com.airmusic.player.util.Prefs;
 import com.google.android.material.textfield.TextInputEditText;
+
+import java.io.File;
 
 public class SettingsActivity extends AppCompatActivity {
 
@@ -26,6 +31,7 @@ public class SettingsActivity extends AppCompatActivity {
     private RadioGroup radioMode;
     private Switch switchAutoPlay;
     private SeekBar seekBalance;
+    private TextView airplayStatus;
 
     private String pendingFolderPath;
     private String pendingFolderDisplay;
@@ -55,6 +61,7 @@ public class SettingsActivity extends AppCompatActivity {
         radioMode = findViewById(R.id.radio_mode);
         switchAutoPlay = findViewById(R.id.switch_auto_play);
         seekBalance = findViewById(R.id.seek_balance);
+        airplayStatus = findViewById(R.id.airplay_status);
 
         inputName.setText(prefs.getAirPlayName());
         String folderPath = prefs.getMusicFolderPath();
@@ -133,6 +140,41 @@ public class SettingsActivity extends AppCompatActivity {
                 Toast.makeText(this, R.string.home_settings_unavailable, Toast.LENGTH_SHORT).show();
             }
         });
+        findViewById(R.id.btn_export_logs).setOnClickListener(v -> exportLogs());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshAirPlayStatus();
+    }
+
+    private void refreshAirPlayStatus() {
+        PlaybackService service = PlaybackService.getInstance();
+        if (service != null) {
+            airplayStatus.setText(service.getAirPlayStatus());
+        } else {
+            airplayStatus.setText("service: not running");
+        }
+    }
+
+    private void exportLogs() {
+        File logFile = DiagnosticLog.getLogFile(this);
+        if (logFile == null) {
+            Toast.makeText(this, R.string.logs_empty, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            Uri uri = FileProvider.getUriForFile(this, "com.airmusic.player.fileprovider", logFile);
+            Intent share = new Intent(Intent.ACTION_SEND);
+            share.setType("text/plain");
+            share.putExtra(Intent.EXTRA_STREAM, uri);
+            share.putExtra(Intent.EXTRA_SUBJECT, getString(R.string.export_logs_share));
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(share, getString(R.string.export_logs_share)));
+        } catch (Exception e) {
+            Toast.makeText(this, R.string.export_logs_failed, Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void save() {
