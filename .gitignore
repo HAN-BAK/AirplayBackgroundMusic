@@ -17,3 +17,4 @@ keystore.properties
 Thumbs.db
 *.log
 adb_logs*.txt
+audio_flinger_*.txt

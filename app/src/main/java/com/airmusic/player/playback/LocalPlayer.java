@@ -1,22 +1,28 @@
 package com.airmusic.player.playback;
 
 import android.content.Context;
-import android.media.MediaPlayer;
 import android.net.Uri;
-import android.os.ParcelFileDescriptor;
 import android.util.Log;
+
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.Player;
+import androidx.media3.exoplayer.ExoPlayer;
 
 import com.airmusic.player.library.Track;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 
 /**
- * Local music playback based on MediaPlayer, supporting sequence, repeat-one,
+ * Local music playback based on ExoPlayer, supporting sequence, repeat-one,
  * shuffle and folder-loop play modes.
+ *
+ * <p>ExoPlayer renders through its own AudioTrack instead of MediaPlayer.
+ * Some TV-box firmwares hijack MediaPlayer into a hardware player (nxplayer)
+ * that downmixes audio to mono, breaking balance and volume consistency with
+ * AirPlay; ExoPlayer avoids that path entirely.</p>
  */
 public class LocalPlayer {
 
@@ -32,9 +38,9 @@ public class LocalPlayer {
 
     private final Context context;
     private final Listener listener;
+    private final BalanceAudioProcessor balanceProcessor = new BalanceAudioProcessor();
 
-    private MediaPlayer player;
-    private ParcelFileDescriptor openPfd;
+    private ExoPlayer player;
     private List<Track> playlist = new ArrayList<>();
     private List<Integer> shuffleOrder = new ArrayList<>();
     private int currentIndex = -1;
@@ -47,6 +53,33 @@ public class LocalPlayer {
     public LocalPlayer(Context context, Listener listener) {
         this.context = context.getApplicationContext();
         this.listener = listener;
+    }
+
+    private ExoPlayer ensurePlayer() {
+        if (player == null) {
+            player = new ExoPlayer.Builder(context, new BalanceRenderersFactory(context, balanceProcessor)).build();
+            player.setVolume(masterGain);
+            player.addListener(new Player.Listener() {
+                @Override
+                public void onPlaybackStateChanged(int playbackState) {
+                    if (playbackState == Player.STATE_ENDED) {
+                        onTrackCompleted();
+                    }
+                }
+
+                @Override
+                public void onIsPlayingChanged(boolean isPlaying) {
+                    playing = isPlaying;
+                    if (listener != null) listener.onLocalStateChanged(isPlaying);
+                }
+
+                @Override
+                public void onPlayerError(androidx.media3.common.PlaybackException error) {
+                    Log.e(TAG, "ExoPlayer error: " + error);
+                }
+            });
+        }
+        return player;
     }
 
     public synchronized void setPlaylist(List<Track> tracks, int startIndex) {
@@ -63,42 +96,24 @@ public class LocalPlayer {
         this.mode = mode;
         if (mode == PlayMode.SHUFFLE) {
             buildShuffleOrder();
-            if (currentIndex >= 0) {
-                for (int i = 0; i < shuffleOrder.size(); i++) {
-                    if (shuffleOrder.get(i) == currentIndex) {
-                        // rotate so current track stays at the current shuffle position
-                        break;
-                    }
-                }
-            }
         }
     }
 
     /** Sets the left/right balance (-1 = full left, 0 = center, +1 = full right). */
     public synchronized void setBalance(float balance) {
         this.balance = Math.max(-1f, Math.min(1f, balance));
-        if (player != null) {
-            player.setVolume(panLeft() * masterGain, panRight() * masterGain);
-        }
+        balanceProcessor.setBalance(this.balance);
     }
 
     public float getBalance() {
         return balance;
     }
 
-    private float panLeft() {
-        return balance <= 0f ? 1f : 1f - balance;
-    }
-
-    private float panRight() {
-        return balance >= 0f ? 1f : 1f + balance;
-    }
-
     /** Extra master gain in [0, 1] for smooth volume transitions. */
     public synchronized void setMasterGain(float gain) {
         this.masterGain = Math.max(0f, Math.min(1f, gain));
         if (player != null) {
-            player.setVolume(panLeft() * masterGain, panRight() * masterGain);
+            player.setVolume(masterGain);
         }
     }
 
@@ -128,7 +143,7 @@ public class LocalPlayer {
             openCurrentTrack(0);
         }
         if (player != null) {
-            player.start();
+            player.play();
             playing = true;
             if (listener != null) listener.onLocalStateChanged(true);
         }
@@ -194,7 +209,7 @@ public class LocalPlayer {
     public synchronized int getPosition() {
         if (player != null) {
             try {
-                return player.getCurrentPosition();
+                return (int) player.getCurrentPosition();
             } catch (Exception e) {
                 return 0;
             }
@@ -205,7 +220,8 @@ public class LocalPlayer {
     public synchronized int getDuration() {
         if (player != null) {
             try {
-                return player.getDuration();
+                long d = player.getDuration();
+                if (d > 0) return (int) d;
             } catch (Exception e) {
                 return 0;
             }
@@ -244,37 +260,19 @@ public class LocalPlayer {
         releasePlayer();
         if (currentIndex < 0 || currentIndex >= playlist.size()) return;
         Track track = playlist.get(currentIndex);
-        MediaPlayer mp = new MediaPlayer();
+        ExoPlayer p = ensurePlayer();
         try {
-            ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(track.uri, "r");
-            if (pfd == null) {
-                Log.e(TAG, "Cannot open " + track.uri);
-                return;
-            }
-            mp.setDataSource(pfd.getFileDescriptor());
-            openPfd = pfd;
-            mp.setOnCompletionListener(mp1 -> onTrackCompleted());
-            mp.setOnErrorListener((mp1, what, extra) -> {
-                Log.e(TAG, "MediaPlayer error " + what + "/" + extra);
-                return false;
-            });
-            mp.prepare();
-            mp.setVolume(panLeft() * masterGain, panRight() * masterGain);
-            if (positionMs > 0) mp.seekTo(positionMs);
-            player = mp;
-        } catch (IOException | SecurityException e) {
+            p.setMediaItem(MediaItem.fromUri(track.uri));
+            p.prepare();
+            if (positionMs > 0) p.seekTo(positionMs);
+        } catch (Exception e) {
             Log.e(TAG, "Cannot play " + track.uri, e);
-            try {
-                mp.release();
-            } catch (Exception ignored) {
-            }
         }
     }
 
     private void onTrackCompleted() {
         int next = nextIndex(true);
         if (next < 0) {
-            // sequence ended
             synchronized (this) {
                 playing = false;
                 releasePlayer();
@@ -287,7 +285,7 @@ public class LocalPlayer {
             currentIndex = next;
             openCurrentTrack(0);
             if (player != null) {
-                player.start();
+                player.play();
                 playing = true;
             }
         }
@@ -295,13 +293,6 @@ public class LocalPlayer {
     }
 
     private void releasePlayer() {
-        if (openPfd != null) {
-            try {
-                openPfd.close();
-            } catch (IOException ignored) {
-            }
-            openPfd = null;
-        }
         if (player != null) {
             try {
                 player.release();
