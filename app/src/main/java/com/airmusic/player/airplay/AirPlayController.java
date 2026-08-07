@@ -1,10 +1,19 @@
 package com.airmusic.player.airplay;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.wifi.WifiManager;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import com.airmusic.player.util.AndroidLogHandler;
+
+import androidx.core.content.ContextCompat;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -20,6 +29,9 @@ import nz.co.iswe.android.airplay.AirPlayServer;
 public class AirPlayController {
 
     private static final String TAG = "AirPlayController";
+    private static final long HEALTH_CHECK_INITIAL_DELAY_MS = 8000;
+    private static final long HEALTH_CHECK_INTERVAL_MS = 30000;
+    private static final long RESTART_DELAY_MS = 3000;
 
     public interface Events {
         void onSessionStart(String clientName, String dacpId, String activeRemote, String remoteIp);
@@ -36,8 +48,40 @@ public class AirPlayController {
     private final Context context;
     private final Events events;
     private final AtomicBoolean started = new AtomicBoolean(false);
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private WifiManager.MulticastLock multicastLock;
     private Thread engineThread;
+    private volatile String deviceName = "";
+    private BroadcastReceiver connectivityReceiver;
+
+    /**
+     * Restarts the AirPlay service once the network is available after a
+     * failed boot-time start.
+     */
+    private final Runnable delayedRestart = new Runnable() {
+        @Override
+        public void run() {
+            if (started.get() && !isAirPlayRunning()) {
+                Log.i(TAG, "Network ready, restarting AirPlay service");
+                restart(deviceName);
+            }
+        }
+    };
+
+    /**
+     * Periodic self-heal: if the service is supposed to run but mDNS/RTSP is
+     * not actually up (e.g. Wi-Fi was not ready at boot), restart it.
+     */
+    private final Runnable healthCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (started.get() && !isAirPlayRunning() && isNetworkAvailable()) {
+                Log.w(TAG, "AirPlay service not healthy, restarting");
+                restart(deviceName);
+            }
+            handler.postDelayed(this, HEALTH_CHECK_INTERVAL_MS);
+        }
+    };
 
     public AirPlayController(Context context, Events events) {
         this.context = context.getApplicationContext();
@@ -58,6 +102,7 @@ public class AirPlayController {
 
 	public synchronized void start(String deviceName) {
 		if (started.get()) return;
+		this.deviceName = deviceName == null ? "" : deviceName;
 
 		WifiManager wifi = (WifiManager) context.getApplicationContext()
 				.getSystemService(Context.WIFI_SERVICE);
@@ -97,6 +142,9 @@ public class AirPlayController {
 		});
 
 		started.set(true);
+		registerNetworkWatcher();
+		handler.removeCallbacks(healthCheck);
+		handler.postDelayed(healthCheck, HEALTH_CHECK_INITIAL_DELAY_MS);
 		engineThread = new Thread(() -> {
 			try {
 				server.startService();
@@ -109,6 +157,9 @@ public class AirPlayController {
 	}
 
 	public synchronized void stop() {
+		handler.removeCallbacks(healthCheck);
+		handler.removeCallbacks(delayedRestart);
+		unregisterNetworkWatcher();
 		try {
 			AirPlayServer.getIstance().stopService();
 		} catch (Throwable t) {
@@ -158,6 +209,60 @@ public class AirPlayController {
 	 */
 	public long getLastAudioPacketTime() {
 		return AirPlayServer.getIstance().getLastAudioPacketTime();
+	}
+
+	/**
+	 * True when the AirPlay server is fully usable: RTSP bound and the
+	 * AirTunes service published via mDNS so senders can find it.
+	 */
+	public boolean isAirPlayRunning() {
+		AirPlayServer server = AirPlayServer.getIstance();
+		return server.isStarted() && server.isRtspBound() && server.isMdnsRegistered();
+	}
+
+	/** True when the device currently has an active network connection. */
+	public boolean isNetworkAvailable() {
+		try {
+			ConnectivityManager cm = (ConnectivityManager) context
+					.getSystemService(Context.CONNECTIVITY_SERVICE);
+			if (cm == null) return false;
+			NetworkInfo info = cm.getActiveNetworkInfo();
+			return info != null && info.isConnected();
+		} catch (Throwable t) {
+			// When in doubt, allow the service to try starting.
+			return true;
+		}
+	}
+
+	private void registerNetworkWatcher() {
+		if (connectivityReceiver != null) return;
+		IntentFilter filter = new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION);
+		connectivityReceiver = new BroadcastReceiver() {
+			@Override
+			public void onReceive(Context context, Intent intent) {
+				AirPlayController.this.onConnectivityChanged();
+			}
+		};
+		ContextCompat.registerReceiver(context, connectivityReceiver, filter,
+				ContextCompat.RECEIVER_NOT_EXPORTED);
+	}
+
+	private void unregisterNetworkWatcher() {
+		if (connectivityReceiver != null) {
+			try {
+				context.unregisterReceiver(connectivityReceiver);
+			} catch (Exception ignored) {
+			}
+			connectivityReceiver = null;
+		}
+	}
+
+	private void onConnectivityChanged() {
+		if (started.get() && !isAirPlayRunning() && isNetworkAvailable()) {
+			Log.i(TAG, "Network available, scheduling AirPlay restart");
+			handler.removeCallbacks(delayedRestart);
+			handler.postDelayed(delayedRestart, RESTART_DELAY_MS);
+		}
 	}
 
 	/** Ends the active AirPlay session so the app can take playback back. */

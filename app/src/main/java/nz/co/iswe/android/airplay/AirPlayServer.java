@@ -116,6 +116,9 @@ public class AirPlayServer implements Runnable {
 	/** Currently active audio handler (per RTSP connection). */
 	private volatile RaopAudioHandler currentAudioHandler;
 
+	/** Number of network interfaces on which the mDNS service was registered. */
+	private volatile int mdnsRegistrationCount;
+
 	/** Left/right balance, -1 = full left, 0 = center, +1 = full right. */
 	private volatile float balance;
 
@@ -170,6 +173,19 @@ public class AirPlayServer implements Runnable {
 	}
 
 	/**
+	 * True when the AirTunes service was successfully published on at least
+	 * one network interface. If false, senders cannot discover this device.
+	 */
+	public boolean isMdnsRegistered() {
+		return mdnsRegistrationCount > 0;
+	}
+
+	/** True when the RTSP listener is actually bound. */
+	public boolean isRtspBound() {
+		return rtspChannel != null && rtspChannel.isBound();
+	}
+
+	/**
 	 * Starts the RTSP server and registers the mDNS service. Safe to call
 	 * multiple times; repeated calls while running are ignored.
 	 */
@@ -199,14 +215,21 @@ public class AirPlayServer implements Runnable {
 			LOG.log(Level.SEVERE, "Failed to bind RTSP bootstrap on port " + rtspPort, e);
 		}
 
-		registerMdns();
+		mdnsRegistrationCount = registerMdns();
 		started = true;
 	}
 
-	private void registerMdns() {
+	/**
+	 * Registers the AirTunes service on every up, non-loopback interface.
+	 *
+	 * @return the number of interfaces on which registration succeeded (0
+	 *         usually means Wi-Fi was not ready yet when this was called).
+	 */
+	private int registerMdns() {
 		final NetworkUtils networkUtils = NetworkUtils.getInstance();
 		final String hardwareAddressString = networkUtils.getHardwareAddressString();
 		final String serviceName = hardwareAddressString + "@" + deviceName;
+		int registered = 0;
 
 		try {
 			synchronized (jmDNSInstances) {
@@ -229,6 +252,7 @@ public class AirPlayServer implements Runnable {
 								AIRTUNES_SERVICE_PROPERTIES);
 							jmDNS.registerService(airTunesServiceInfo);
 							LOG.info("Registered AirTunes service '" + airTunesServiceInfo.getName() + "' on " + addr);
+							registered++;
 						} catch (final Throwable e) {
 							LOG.log(Level.SEVERE, "Failed to publish service on " + addr, e);
 						}
@@ -238,6 +262,8 @@ public class AirPlayServer implements Runnable {
 		} catch (final SocketException e) {
 			LOG.log(Level.SEVERE, "Failed to register mDNS services", e);
 		}
+		LOG.info("mDNS registration completed on " + registered + " interface(s)");
+		return registered;
 	}
 
 	/**
@@ -290,6 +316,7 @@ public class AirPlayServer implements Runnable {
 		channelGroup = null;
 		rtspChannel = null;
 		rtspBootstrap = null;
+		mdnsRegistrationCount = 0;
 		started = false;
 		LOG.info("AirPlay server stopped");
 	}
