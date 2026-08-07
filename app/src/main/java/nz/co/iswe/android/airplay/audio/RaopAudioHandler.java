@@ -161,6 +161,12 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 				return;
 			}
 
+			// Record the last time the sender delivered an audio packet. The app
+			// uses this as a "watchdog": iOS pauses without always sending an
+			// RTSP FLUSH, but it does stop the audio stream, so a silent gap
+			// means the phone-side playback is paused.
+			lastAudioPacketTime = System.currentTimeMillis();
+
 			if (receiverPaused) {
 				// Local pause: drop incoming audio without enqueueing it.
 				return;
@@ -261,6 +267,9 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 	/** True after the sender flushed (paused) until the next audio packet. */
 	private boolean dataFlowPaused;
 
+	/** Timestamp of the last received audio packet (watchdog for phone-side pause). */
+	private volatile long lastAudioPacketTime;
+
 	/** Left/right balance, -1 = full left, 0 = center, +1 = full right. */
 	private volatile float balance;
 
@@ -314,6 +323,7 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 		activeRemote = "";
 		remoteIp = "";
 		dataFlowPaused = false;
+		lastAudioPacketTime = 0L;
 
 		if (audioOutputQueue != null){
 			audioOutputQueue.close();
@@ -1059,6 +1069,14 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 		if (queue != null) {
 			queue.setOutputGain(this.volumeGain);
 		}
+	}
+
+	/**
+	 * Returns the timestamp (System.currentTimeMillis) of the last received
+	 * audio packet, or 0 if no audio has been received yet.
+	 */
+	public long getLastAudioPacketTime() {
+		return lastAudioPacketTime;
 	}
 
 	/**

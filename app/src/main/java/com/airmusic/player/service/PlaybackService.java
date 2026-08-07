@@ -65,6 +65,9 @@ public class PlaybackService extends Service {
 
     private static final String CHANNEL_ID = "playback";
     private static final int NOTIFICATION_ID = 1001;
+    /** If no AirPlay audio packet arrives within this window, treat it as a phone-side pause. */
+    private static final long AIRPLAY_STALL_TIMEOUT_MS = 3500;
+    private static final long AIRPLAY_POLL_INTERVAL_MS = 2000;
 
     private static PlaybackService instance;
 
@@ -100,6 +103,8 @@ public class PlaybackService extends Service {
     private boolean resumeLocalAfterAirPlay;
     private boolean airPlaySessionActive;
     private boolean airPlayUserPaused;
+    /** True after the audio watchdog declared a phone-side pause. */
+    private boolean airPlayWatchdogPaused;
 
     private final Runnable ticker = new Runnable() {
         @Override
@@ -113,6 +118,67 @@ public class PlaybackService extends Service {
             main.postDelayed(this, 500);
         }
     };
+
+    /**
+     * Keeps the app in sync with phone-side play/pause:
+     * <ul>
+     * <li>Audio-packet watchdog: iOS stops sending RTP audio when paused
+     * (without always sending an RTSP FLUSH), so a silent gap means paused.</li>
+     * <li>DACP playstatus polling as an additional signal when available.</li>
+     * </ul>
+     */
+    private final Runnable airPlayStatusPoller = new Runnable() {
+        @Override
+        public void run() {
+            if (!airPlaySessionActive) {
+                return;
+            }
+            checkAirPlayAudioWatchdog();
+            if (dacpClient != null) {
+                dacpClient.playStatus(status -> main.post(() -> applyAirPlayStatus(status)));
+            }
+            main.postDelayed(this, AIRPLAY_POLL_INTERVAL_MS);
+        }
+    };
+
+    /**
+     * Watches the AirPlay audio stream:
+     * <ul>
+     * <li>If the sender stops delivering audio packets for longer than
+     * {@link #AIRPLAY_STALL_TIMEOUT_MS}, mirror the phone-side pause.</li>
+     * <li>If audio starts flowing again after a watchdog pause, mirror the
+     * phone-side resume (the engine only fires a resume event when an RTSP
+     * FLUSH preceded the pause, which iOS does not always send).</li>
+     * </ul>
+     */
+    private void checkAirPlayAudioWatchdog() {
+        if (!airPlaySessionActive) return;
+        long lastPacket = airPlayController == null ? 0L : airPlayController.getLastAudioPacketTime();
+        long now = System.currentTimeMillis();
+
+        if (lastPacket > 0 && now - lastPacket > AIRPLAY_STALL_TIMEOUT_MS) {
+            if (!airPlayWatchdogPaused
+                    && state.source == PlayerUiState.Source.AIRPLAY
+                    && state.playing
+                    && !state.receiverPausedByUser) {
+                Log.i(TAG, "AirPlay audio stalled " + (now - lastPacket)
+                        + "ms, treating as phone-side pause");
+                airPlayWatchdogPaused = true;
+                handleAirPlayPause();
+            }
+            return;
+        }
+
+        if (airPlayWatchdogPaused) {
+            Log.i(TAG, "AirPlay audio flowing again, phone resumed");
+            airPlayWatchdogPaused = false;
+            if (state.source == PlayerUiState.Source.AIRPLAY && !state.playing) {
+                handleAirPlayStart(state.clientName, "", "", "", false);
+            } else if (state.source == PlayerUiState.Source.LOCAL) {
+                handleAirPlayStart(state.clientName, "", "", "", false);
+            }
+        }
+    }
 
     // Smooth volume transitions when switching between local and AirPlay
     private float localFade = 1f;
@@ -266,6 +332,7 @@ public class PlaybackService extends Service {
         if (ticker != null) main.removeCallbacks(ticker);
         cancelFade();
         if (airPlayController != null) airPlayController.stop();
+        main.removeCallbacks(airPlayStatusPoller);
         if (dacpClient != null) {
             dacpClient.release();
             dacpClient = null;
@@ -427,6 +494,9 @@ public class PlaybackService extends Service {
     private void handleAirPlayStart(String clientName, String dacpId, String activeRemote, String remoteIp, boolean newSession) {
         airPlaySessionActive = true;
         airPlayUserPaused = false;
+        airPlayWatchdogPaused = false;
+        main.removeCallbacks(airPlayStatusPoller);
+        main.post(airPlayStatusPoller);
         if (newSession) {
             if (dacpClient != null) {
                 dacpClient.release();
@@ -478,9 +548,32 @@ public class PlaybackService extends Service {
 		publish();
 	}
 
+	/**
+	 * Applies a DACP play status polled from the sender, keeping the app's
+	 * play/pause state in sync when the phone is used to control playback.
+	 *
+	 * @param status 4 = playing, 3 = paused, 2 = stopped, -1 = unknown
+	 */
+	private void applyAirPlayStatus(int status) {
+		if (status == 4) {
+			// Phone resumed: mirror the sender-resume path, keeping the
+			// previously known client name for the UI badge.
+			if (!(state.source == PlayerUiState.Source.AIRPLAY && state.playing)) {
+				handleAirPlayStart(state.clientName, "", "", "", false);
+			}
+		} else if (status == 3) {
+			// Phone paused: mirror the sender-pause path.
+			if (state.source == PlayerUiState.Source.AIRPLAY && state.playing) {
+				handleAirPlayPause();
+			}
+		}
+	}
+
 	private void handleAirPlayStop() {
 		airPlaySessionActive = false;
 		airPlayUserPaused = false;
+		airPlayWatchdogPaused = false;
+		main.removeCallbacks(airPlayStatusPoller);
 		if (dacpClient != null) {
 			dacpClient.release();
 			dacpClient = null;

@@ -152,6 +152,14 @@ public class AirPlayController {
 		AirPlayServer.getIstance().setVolumeGain(gain);
 	}
 
+	/**
+	 * Returns the timestamp of the last received AirPlay audio packet, or 0
+	 * if no audio has been received yet (watchdog for phone-side pause).
+	 */
+	public long getLastAudioPacketTime() {
+		return AirPlayServer.getIstance().getLastAudioPacketTime();
+	}
+
 	/** Ends the active AirPlay session so the app can take playback back. */
 	public void disconnectSession() {
 		AirPlayServer.getIstance().disconnectSession();

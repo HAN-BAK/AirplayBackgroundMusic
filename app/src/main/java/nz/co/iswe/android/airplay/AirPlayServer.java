@@ -319,6 +319,15 @@ public class AirPlayServer implements Runnable {
 		return balance;
 	}
 
+	/**
+	 * Returns the timestamp of the last received AirPlay audio packet, or 0
+	 * if no audio has been received yet (watchdog for phone-side pause).
+	 */
+	public long getLastAudioPacketTime() {
+		final RaopAudioHandler handler = currentAudioHandler;
+		return handler == null ? 0L : handler.getLastAudioPacketTime();
+	}
+
 	/** Sets an extra output gain in [0, 1] (fade control). */
 	public void setVolumeGain(final float gain) {
 		this.volumeGain = Math.max(0.0f, Math.min(1.0f, gain));
