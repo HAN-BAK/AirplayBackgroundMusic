@@ -558,17 +558,6 @@ public class AudioOutputQueue implements AudioClock {
 		}
 	}
 
-	/** Converts an AirPlay volume in dB (0 = unity) to a linear gain. */
-	private static float dbToLinear(final float volumeDb) {
-		if (Float.isNaN(volumeDb)) {
-			return 1.0f;
-		}
-		if (volumeDb >= 0.0f) {
-			return 1.0f;
-		}
-		return clampVolume((float)Math.pow(10.0, volumeDb / 20.0));
-	}
-
 	/**
 	 * Returns the line's MASTER_GAIN control's value.
 	 */
@@ -586,7 +575,11 @@ public class AudioOutputQueue implements AudioClock {
 	 * @param volumeDb desired gain in dB (0 = unity, negative = quieter)
 	 */
 	public synchronized void setRequestedVolume(final float volume) {
-		requestedVolume = dbToLinear(volume);
+		// Volume normalization: the receiver always plays at full gain so
+		// AirPlay sounds exactly like local playback (both are controlled by
+		// the device volume only). The sender's volume slider no longer
+		// attenuates the output; only a real mute (-144 dB) is honored.
+		requestedVolume = volume <= -144.0f ? 0.0f : 1.0f;
 	}
 
 	/**
