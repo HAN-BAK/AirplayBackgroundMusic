@@ -64,10 +64,7 @@ public class AirPlayController {
     private final Runnable delayedRestart = new Runnable() {
         @Override
         public void run() {
-            if (started.get() && !isAirPlayRunning()) {
-                DiagnosticLog.i(TAG, "Network ready, restarting AirPlay service");
-                restart(deviceName);
-            }
+            healAirPlayService();
         }
     };
 
@@ -78,9 +75,8 @@ public class AirPlayController {
     private final Runnable healthCheck = new Runnable() {
         @Override
         public void run() {
-            if (started.get() && !isAirPlayRunning() && isNetworkAvailable()) {
-                DiagnosticLog.w(TAG, "AirPlay service not healthy, restarting");
-                restart(deviceName);
+            if (isNetworkAvailable()) {
+                healAirPlayService();
             }
             handler.postDelayed(this, HEALTH_CHECK_INTERVAL_MS);
         }
@@ -94,7 +90,18 @@ public class AirPlayController {
 
     private static void installLogging() {
         try {
-            Logger.getLogger("").addHandler(new AndroidLogHandler());
+            Logger root = Logger.getLogger("");
+            int before = 0;
+            int removed = 0;
+            for (java.util.logging.Handler h : root.getHandlers()) {
+                before++;
+                // Android ships a default handler that also prints to logcat;
+                // keep only ours so every line is logged exactly once.
+                root.removeHandler(h);
+                removed++;
+            }
+            root.addHandler(new AndroidLogHandler());
+            DiagnosticLog.i(TAG, "installLogging: removed " + removed + " default handler(s) (before=" + before + ")");
             Logger.getLogger("nz.co.iswe.android.airplay").setLevel(Level.INFO);
             Logger.getLogger("org.phlo.AirReceiver").setLevel(Level.WARNING);
             Logger.getLogger("javax.jmdns").setLevel(Level.WARNING);
@@ -181,9 +188,15 @@ public class AirPlayController {
 
 	public synchronized void restart(String deviceName) {
 		restartCount.incrementAndGet();
-        stop();
-        start(deviceName);
-    }
+		stop();
+		handler.removeCallbacks(delayedRestart);
+		// Give the old listener time to fully release port 5000 before rebinding.
+		handler.postDelayed(() -> {
+			if (!started.get()) {
+				start(deviceName);
+			}
+		}, 1000);
+	}
 
     public boolean isStarted() {
         return started.get();
@@ -262,10 +275,30 @@ public class AirPlayController {
 	}
 
 	private void onConnectivityChanged() {
-		if (started.get() && !isAirPlayRunning() && isNetworkAvailable()) {
-			DiagnosticLog.i(TAG, "Network available, scheduling AirPlay restart");
+		if (isNetworkAvailable()) {
 			handler.removeCallbacks(delayedRestart);
 			handler.postDelayed(delayedRestart, RESTART_DELAY_MS);
+		}
+	}
+
+	/**
+	 * Heals the AirPlay service:
+	 * <ul>
+	 * <li>RTSP up but mDNS missing (the usual boot case) -> re-publish mDNS
+	 * only, without touching the listener or its port.</li>
+	 * <li>RTSP also down -> full restart.</li>
+	 * </ul>
+	 */
+	private void healAirPlayService() {
+		if (!started.get() || isAirPlayRunning()) return;
+		AirPlayServer server = AirPlayServer.getIstance();
+		if (server.isRtspBound() && !server.isMdnsRegistered()) {
+			DiagnosticLog.i(TAG, "RTSP up but mDNS missing, re-publishing mDNS");
+			boolean ok = server.repairMdns();
+			DiagnosticLog.i(TAG, "mDNS repair result: " + ok);
+		} else {
+			DiagnosticLog.w(TAG, "AirPlay service not healthy, restarting");
+			restart(deviceName);
 		}
 	}
 

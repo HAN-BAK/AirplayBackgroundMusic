@@ -211,12 +211,57 @@ public class AirPlayServer implements Runnable {
 			channelGroup.add(rtspChannel);
 			rtspBootstrap = bootstrap;
 			LOG.info("Launched RTSP service on port " + rtspPort);
-		} catch (final UnknownHostException e) {
+		} catch (final Throwable e) {
 			LOG.log(Level.SEVERE, "Failed to bind RTSP bootstrap on port " + rtspPort, e);
+			// Clean up everything so a later retry can actually succeed.
+			if (rtspChannel != null) {
+				try {
+					rtspChannel.close();
+				} catch (final Throwable ignored) {
+				}
+				rtspChannel = null;
+			}
+			try {
+				bootstrap.releaseExternalResources();
+			} catch (final Throwable ignored) {
+			}
+			try {
+				executorService.shutdown();
+			} catch (final Throwable ignored) {
+			}
+			if (channelExecutionHandler != null) {
+				try {
+					channelExecutionHandler.releaseExternalResources();
+				} catch (final Throwable ignored) {
+				}
+			}
+			channelGroup = null;
+			rtspBootstrap = null;
+			executorService = null;
+			channelExecutionHandler = null;
+			started = false;
+			return;
 		}
 
 		mdnsRegistrationCount = registerMdns();
 		started = true;
+	}
+
+	/**
+	 * Re-publishes the AirTunes mDNS service without touching the RTSP
+	 * listener. Used when the receiver is up but senders cannot discover it
+	 * (e.g. Wi-Fi became ready after boot).
+	 *
+	 * @return true when at least one interface registered successfully.
+	 */
+	public synchronized boolean repairMdns() {
+		if (!isRtspBound()) {
+			LOG.warning("Cannot repair mDNS: RTSP listener is not bound");
+			return false;
+		}
+		mdnsRegistrationCount = registerMdns();
+		LOG.info("mDNS repair finished: " + mdnsRegistrationCount + " interface(s)");
+		return isMdnsRegistered();
 	}
 
 	/**
@@ -226,12 +271,13 @@ public class AirPlayServer implements Runnable {
 	 *         usually means Wi-Fi was not ready yet when this was called).
 	 */
 	private int registerMdns() {
-		final NetworkUtils networkUtils = NetworkUtils.getInstance();
-		final String hardwareAddressString = networkUtils.getHardwareAddressString();
-		final String serviceName = hardwareAddressString + "@" + deviceName;
+		closeMdnsInstances();
 		int registered = 0;
 
 		try {
+			final NetworkUtils networkUtils = NetworkUtils.getInstance();
+			final String hardwareAddressString = networkUtils.getHardwareAddressString();
+			final String serviceName = hardwareAddressString + "@" + deviceName;
 			synchronized (jmDNSInstances) {
 				for (final NetworkInterface iface : Collections.list(NetworkInterface.getNetworkInterfaces())) {
 					if (iface.isLoopback() || iface.isPointToPoint() || !iface.isUp()) {
@@ -289,21 +335,17 @@ public class AirPlayServer implements Runnable {
 			allChannelsClosed = channelGroup.close();
 		}
 
-		synchronized (jmDNSInstances) {
-			for (final JmDNS jmDNS : jmDNSInstances) {
-				try {
-					jmDNS.unregisterAllServices();
-					jmDNS.close();
-					LOG.info("Unregistered services on " + jmDNS.getInterface());
-				} catch (final IOException e) {
-					LOG.log(Level.WARNING, "Failed to unregister some services", e);
-				}
-			}
-			jmDNSInstances.clear();
-		}
+		closeMdnsInstances();
 
 		if (allChannelsClosed != null) {
 			allChannelsClosed.awaitUninterruptibly();
+		}
+		if (rtspBootstrap != null) {
+			try {
+				rtspBootstrap.releaseExternalResources();
+			} catch (final Throwable t) {
+				LOG.log(Level.WARNING, "Failed to release RTSP bootstrap resources", t);
+			}
 		}
 		if (executorService != null) {
 			executorService.shutdown();
@@ -319,6 +361,22 @@ public class AirPlayServer implements Runnable {
 		mdnsRegistrationCount = 0;
 		started = false;
 		LOG.info("AirPlay server stopped");
+	}
+
+	/** Closes all registered mDNS instances so the service can be re-published. */
+	private void closeMdnsInstances() {
+		synchronized (jmDNSInstances) {
+			for (final JmDNS jmDNS : jmDNSInstances) {
+				try {
+					jmDNS.unregisterAllServices();
+					jmDNS.close();
+					LOG.info("Unregistered services on " + jmDNS.getInterface());
+				} catch (final IOException e) {
+					LOG.log(Level.WARNING, "Failed to unregister some services", e);
+				}
+			}
+			jmDNSInstances.clear();
+		}
 	}
 
 	/** Registers the audio handler of the current RTSP connection. */

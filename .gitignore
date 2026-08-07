@@ -16,3 +16,4 @@ keystore.properties
 .DS_Store
 Thumbs.db
 *.log
+adb_logs*.txt

@@ -26,16 +26,12 @@ public class AndroidLogHandler extends Handler {
         }
         int level = record.getLevel().intValue();
         if (level >= Level.SEVERE.intValue()) {
-            Log.e(tag, message);
             DiagnosticLog.e(tag, message);
         } else if (level >= Level.WARNING.intValue()) {
-            Log.w(tag, message);
             DiagnosticLog.w(tag, message);
         } else if (level >= Level.INFO.intValue()) {
-            Log.i(tag, message);
             DiagnosticLog.i(tag, message);
         } else {
-            Log.d(tag, message);
             DiagnosticLog.i(tag, message);
         }
     }
