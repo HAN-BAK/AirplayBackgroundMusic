@@ -18,3 +18,8 @@ Thumbs.db
 *.log
 adb_logs*.txt
 audio_flinger_*.txt
+.ui_tmp.xml
+bt_a2dp_*/
+bt_sink_discover/
+bt_source_helper/
+bt_unpair_helper/
