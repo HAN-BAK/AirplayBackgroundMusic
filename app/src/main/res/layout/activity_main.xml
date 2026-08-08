@@ -213,40 +213,35 @@
             android:gravity="center"
             android:orientation="horizontal">
 
-            <ImageView
-                android:id="@+id/volume_icon"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:contentDescription="@string/volume"
-                android:src="@drawable/ic_volume"
-                android:tint="@color/text_primary" />
-
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
+                android:layout_weight="0.5"
                 android:gravity="center">
 
-                <Space
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="0.25" />
+                <ImageView
+                    android:id="@+id/volume_icon"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:contentDescription="@string/volume"
+                    android:src="@drawable/ic_volume"
+                    android:tint="@color/text_primary" />
 
                 <SeekBar
                     android:id="@+id/volume_seek"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="0.5"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
                     android:max="100"
                     android:progressTint="@color/accent"
                     android:thumbTint="@color/accent" />
-
-                <Space
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="0.25" />
             </LinearLayout>
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="0.5" />
         </LinearLayout>
 
         <ImageButton

@@ -115,10 +115,17 @@ public class PlaybackService extends Service {
                 int duration = localPlayer.getDuration();
                 if (duration > 0) state.durationMs = duration;
                 StateBus.get().postState(state);
+                long now = System.currentTimeMillis();
+                if (now - lastTrackSaveTime > 5000) {
+                    saveLastTrack();
+                    lastTrackSaveTime = now;
+                }
             }
             main.postDelayed(this, 500);
         }
     };
+
+    private long lastTrackSaveTime;
 
     /**
      * Keeps the app in sync with phone-side play/pause:
@@ -275,8 +282,8 @@ public class PlaybackService extends Service {
             if (error != null) {
                 state.statusText = error;
             }
-			if (prefs.isAutoPlayOnStart() && state.source == PlayerUiState.Source.IDLE) {
-				resumeLastTrackIfPossible();
+			if (state.source == PlayerUiState.Source.IDLE) {
+				resumeLastTrackIfPossible(prefs.isAutoPlayOnStart());
 			}
 			publish();
 		});
@@ -862,20 +869,40 @@ public class PlaybackService extends Service {
         });
     }
 
-    private void resumeLastTrackIfPossible() {
+    /**
+     * Restores the last played local track (and position) after the app
+     * starts. When {@code autoplay} is false the track is loaded and shown
+     * but kept paused; the user can resume it with a tap.
+     */
+    private void resumeLastTrackIfPossible(boolean autoplay) {
+        if (tracks.isEmpty()) return;
         String lastUri = prefs.getLastTrackUri();
-        if (lastUri != null && !tracks.isEmpty()) {
-            for (int i = 0; i < tracks.size(); i++) {
-                if (tracks.get(i).uri.toString().equals(lastUri)) {
-                    playTrack(tracks.get(i));
-                    localPlayer.seekTo(prefs.getLastTrackPosition());
-                    return;
+        Track target = null;
+        if (lastUri != null) {
+            for (Track t : tracks) {
+                if (t.uri.toString().equals(lastUri)) {
+                    target = t;
+                    break;
                 }
             }
         }
-        if (!tracks.isEmpty()) {
-            playTrack(tracks.get(0));
+        if (target == null) {
+            target = tracks.get(0);
         }
+        int index = tracks.indexOf(target);
+        state.source = PlayerUiState.Source.LOCAL;
+        localPlayer.setMasterGain(0f);
+        localPlayer.setPlaylist(tracks, index);
+        localPlayer.seekTo(prefs.getLastTrackPosition());
+        if (autoplay) {
+            localPlayer.play();
+            fadeLocalIn();
+            state.playing = true;
+        } else {
+            state.playing = false;
+        }
+        loadMetadata(target);
+        publish();
     }
 
     private void saveLastTrack() {
