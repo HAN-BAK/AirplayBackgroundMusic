@@ -199,13 +199,23 @@
         android:paddingBottom="8dp">
 
         <TextView
-            android:layout_width="0dp"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
             android:text="@string/bottom_bar_title"
             android:textColor="@color/text_primary"
             android:textSize="16sp"
             android:textStyle="bold" />
+
+        <SeekBar
+            android:id="@+id/volume_seek"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="12dp"
+            android:layout_weight="1"
+            android:max="100"
+            android:progressTint="@color/accent"
+            android:thumbTint="@color/accent" />
 
         <ImageButton
             android:id="@+id/btn_library"

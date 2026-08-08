@@ -3,9 +3,14 @@ package com.airmusic.player;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.ContentObserver;
 import android.graphics.Bitmap;
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.Settings;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
@@ -37,10 +42,13 @@ public class MainActivity extends AppCompatActivity {
     private TextView durationText;
     private ImageButton btnPlay;
     private SeekBar seekBar;
+    private SeekBar volumeSeek;
     private View seekRow;
 
     private boolean seeking;
     private PlayerUiState lastState;
+    private AudioManager audioManager;
+    private ContentObserver volumeObserver;
 
     private final StateBus.Listener stateListener = state -> {
         lastState = state;
@@ -67,8 +75,11 @@ public class MainActivity extends AppCompatActivity {
         durationText = findViewById(R.id.duration_text);
         btnPlay = findViewById(R.id.btn_play);
         seekBar = findViewById(R.id.seek_bar);
+        volumeSeek = findViewById(R.id.volume_seek);
         seekRow = findViewById(R.id.seek_row);
         View leftPanel = findViewById(R.id.left_panel);
+
+        setupVolumeSlider();
 
         // Size the album art square and center it in the left panel (same
         // vertical position as the playback controls). The panel wraps around
@@ -131,6 +142,51 @@ public class MainActivity extends AppCompatActivity {
         requestPermissionsIfNeeded();
     }
 
+    /** Binds the bottom-bar slider to the system media volume. */
+    private void setupVolumeSlider() {
+        audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (audioManager == null || volumeSeek == null) return;
+
+        volumeSeek.setMax(audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+        volumeSeek.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+        volumeSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0);
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+
+        // Keep the slider in sync when the volume is changed elsewhere
+        // (e.g. the device volume keys).
+        volumeObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
+            @Override
+            public void onChange(boolean selfChange) {
+                int current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+                if (volumeSeek.getProgress() != current) {
+                    volumeSeek.setProgress(current);
+                }
+            }
+        };
+        getContentResolver().registerContentObserver(
+                Settings.System.getUriFor("volume_music"), false, volumeObserver);
+    }
+
+    private void syncVolumeSlider() {
+        if (audioManager != null && volumeSeek != null) {
+            volumeSeek.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+        }
+    }
+
     private void requestPermissionsIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33) {
             boolean audio = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_AUDIO)
@@ -154,12 +210,25 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         StateBus.get().addListener(stateListener);
+        syncVolumeSlider();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         StateBus.get().removeListener(stateListener);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (volumeObserver != null) {
+            try {
+                getContentResolver().unregisterContentObserver(volumeObserver);
+            } catch (Exception ignored) {
+            }
+            volumeObserver = null;
+        }
     }
 
     private void render(PlayerUiState s) {
