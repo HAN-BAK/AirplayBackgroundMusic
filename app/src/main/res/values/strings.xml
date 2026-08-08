@@ -76,4 +76,5 @@
     <string name="logs_empty">暂时没有诊断日志</string>
     <string name="export_logs_failed">导出日志失败</string>
     <string name="export_logs_share">分享诊断日志</string>
+    <string name="volume">音量</string>
 </resources>
