@@ -45,7 +45,7 @@ public class SettingsActivity extends AppCompatActivity {
                         pendingFolderDisplay = result.getData().getStringExtra(
                                 FolderPickerActivity.EXTRA_RESULT_DISPLAY);
                         if (pendingFolderDisplay == null) pendingFolderDisplay = path;
-                        pathDisplay.setText(pendingFolderDisplay + "\n" + path);
+                        pathDisplay.setText(formatFolderDisplay(pendingFolderDisplay, path));
                     }
                 }
             });
@@ -68,9 +68,9 @@ public class SettingsActivity extends AppCompatActivity {
         String folderUri = prefs.getMusicFolderUri();
         String folderDisplay = prefs.getMusicFolderDisplay();
         if (folderPath != null) {
-            pathDisplay.setText((folderDisplay == null ? "" : folderDisplay + "\n") + folderPath);
+            pathDisplay.setText(formatFolderDisplay(folderDisplay, folderPath));
         } else if (folderUri != null) {
-            pathDisplay.setText((folderDisplay == null ? "" : folderDisplay + "\n") + folderUri);
+            pathDisplay.setText(formatFolderDisplay(folderDisplay, folderUri));
         }
 
         switch (prefs.getPlayMode()) {
@@ -175,6 +175,14 @@ public class SettingsActivity extends AppCompatActivity {
         } catch (Exception e) {
             Toast.makeText(this, R.string.export_logs_failed, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /** Shows the folder display name and path on one line when they are identical. */
+    private String formatFolderDisplay(String display, String path) {
+        if (display == null || display.trim().length() == 0 || display.equals(path)) {
+            return path;
+        }
+        return display + "\n" + path;
     }
 
     private void save() {
