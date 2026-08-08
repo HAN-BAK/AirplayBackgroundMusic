@@ -136,11 +136,11 @@
                     android:textColor="@color/text_primary" />
 
                 <RadioButton
-                    android:id="@+id/mode_repeat_one"
+                    android:id="@+id/mode_folder_loop"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:buttonTint="@color/accent"
-                    android:text="@string/mode_repeat_one"
+                    android:text="@string/mode_folder_loop"
                     android:textColor="@color/text_primary" />
 
                 <RadioButton
@@ -152,11 +152,11 @@
                     android:textColor="@color/text_primary" />
 
                 <RadioButton
-                    android:id="@+id/mode_folder_loop"
+                    android:id="@+id/mode_repeat_one"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:buttonTint="@color/accent"
-                    android:text="@string/mode_folder_loop"
+                    android:text="@string/mode_repeat_one"
                     android:textColor="@color/text_primary" />
             </RadioGroup>
 

@@ -28,8 +28,8 @@
     <string name="next">下一首</string>
     <string name="mode_sequence">顺序播放</string>
     <string name="mode_repeat_one">单曲循环</string>
-    <string name="mode_shuffle">随机播放</string>
-    <string name="mode_folder_loop">文件夹循环</string>
+    <string name="mode_shuffle">随机循环播放</string>
+    <string name="mode_folder_loop">顺序循环播放</string>
     <string name="settings_title">设置</string>
     <string name="pref_airplay_name">AirPlay 设备名</string>
     <string name="pref_airplay_name_hint">在 iPhone/其他设备上显示的名称</string>
