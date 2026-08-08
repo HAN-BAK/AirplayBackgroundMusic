@@ -213,6 +213,11 @@
             android:gravity="center"
             android:orientation="horizontal">
 
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="0.25" />
+
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -241,7 +246,7 @@
             <Space
                 android:layout_width="0dp"
                 android:layout_height="1dp"
-                android:layout_weight="0.5" />
+                android:layout_weight="0.25" />
         </LinearLayout>
 
         <ImageButton
