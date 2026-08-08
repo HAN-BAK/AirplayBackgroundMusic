@@ -234,6 +234,12 @@ public class LocalPlayer {
         if (playlist.isEmpty()) return -1;
         if (mode == PlayMode.SHUFFLE && shuffleOrder.size() > 1) {
             int pos = shuffleOrder.indexOf(currentIndex);
+            if (forward && pos == shuffleOrder.size() - 1) {
+                // One full shuffled round finished: reshuffle so the next
+                // round has a fresh order instead of repeating the same one.
+                buildShuffleOrder();
+                pos = shuffleOrder.indexOf(currentIndex);
+            }
             int nextPos = forward ? (pos + 1) % shuffleOrder.size() : (pos - 1 + shuffleOrder.size()) % shuffleOrder.size();
             return shuffleOrder.get(nextPos);
         }
