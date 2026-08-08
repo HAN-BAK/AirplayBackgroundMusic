@@ -101,7 +101,7 @@ public final class MusicLibrary {
         if (folderPath != null) {
             File dir = new File(folderPath);
             if (dir.isDirectory() && dir.canRead()) {
-                scanFileTree(dir, byUri, 0);
+                scanFileTree(context, dir, byUri, 0);
                 folderScanned = true;
             }
         }
@@ -131,27 +131,50 @@ public final class MusicLibrary {
     }
 
     /** Scans a raw filesystem tree (internal storage or USB volume). */
-    private void scanFileTree(File dir, Map<String, Track> byUri, int depth) {
+    private void scanFileTree(Context context, File dir, Map<String, Track> byUri, int depth) {
         if (depth > 10) return;
         File[] files = dir.listFiles();
         if (files == null) return;
         for (File file : files) {
             if (file.isDirectory()) {
-                scanFileTree(file, byUri, depth + 1);
+                scanFileTree(context, file, byUri, depth + 1);
             } else if (file.isFile() && AudioExt.isAudio(file.getName())) {
-                String name = file.getName();
-                Track track = new Track(
-                        Uri.fromFile(file),
-                        nameWithoutExt(name),
-                        "",
-                        "",
-                        0,
-                        dir.getName(),
-                        file.getAbsolutePath(),
-                        AudioExt.extensionOf(name));
+                Track track = buildTrackFromFile(context, file, dir.getName());
                 byUri.put(track.uri.toString(), track);
             }
         }
+    }
+
+    /** Reads file tags (title/artist/album/duration) when scanning folders or USB. */
+    private Track buildTrackFromFile(Context context, File file, String folder) {
+        String name = file.getName();
+        String title = nameWithoutExt(name);
+        String artist = "";
+        String album = "";
+        long duration = 0;
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            title = firstNonEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE), title);
+            artist = trimToEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST));
+            album = trimToEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM));
+            String d = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (d != null) {
+                try {
+                    duration = Long.parseLong(d);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "metadata read failed: " + name, e);
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+        return new Track(Uri.fromFile(file), title, artist, album, duration, folder,
+                file.getAbsolutePath(), AudioExt.extensionOf(name));
     }
 
     private static int compareNullable(String a, String b) {
@@ -170,25 +193,56 @@ public final class MusicLibrary {
             if (file.isDirectory()) {
                 scanSafTree(context, file.getUri(), byUri, depth + 1);
             } else if (file.isFile() && AudioExt.isAudio(file.getName())) {
-                String name = file.getName();
-                Track track = new Track(
-                        file.getUri(),
-                        nameWithoutExt(name),
-                        "",
-                        "",
-                        0,
-                        root.getName(),
-                        null,
-                        AudioExt.extensionOf(name));
+                Track track = buildTrackFromSaf(context, file, root.getName());
                 byUri.put(file.getUri().toString(), track);
             }
         }
         return true;
     }
 
+    /** Reads file tags for SAF (content://) documents. */
+    private Track buildTrackFromSaf(Context context, DocumentFile file, String folder) {
+        String name = file.getName();
+        String title = nameWithoutExt(name);
+        String artist = "";
+        String album = "";
+        long duration = 0;
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(context, file.getUri());
+            title = firstNonEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE), title);
+            artist = trimToEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST));
+            album = trimToEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM));
+            String d = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (d != null) {
+                try {
+                    duration = Long.parseLong(d);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "metadata read failed: " + name, e);
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+        return new Track(file.getUri(), title, artist, album, duration, folder,
+                null, AudioExt.extensionOf(name));
+    }
+
     private static String nameWithoutExt(String name) {
         int dot = name.lastIndexOf('.');
         return dot > 0 ? name.substring(0, dot) : name;
+    }
+
+    private static String firstNonEmpty(String value, String fallback) {
+        return value != null && value.trim().length() > 0 ? value.trim() : fallback;
+    }
+
+    private static String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private void scanMediaStore(Context context, Map<String, Track> byUri) {
