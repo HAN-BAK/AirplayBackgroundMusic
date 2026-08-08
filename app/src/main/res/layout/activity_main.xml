@@ -219,13 +219,18 @@
                 android:layout_height="22dp"
                 android:contentDescription="@string/volume"
                 android:src="@drawable/ic_volume"
-                android:tint="@color/text_secondary" />
+                android:tint="@color/text_primary" />
 
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:gravity="center">
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="0.25" />
 
                 <SeekBar
                     android:id="@+id/volume_seek"
@@ -236,6 +241,11 @@
                     android:max="100"
                     android:progressTint="@color/accent"
                     android:thumbTint="@color/accent" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="0.25" />
             </LinearLayout>
         </LinearLayout>
 
