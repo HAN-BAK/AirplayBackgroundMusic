@@ -49,6 +49,14 @@ public class MainActivity extends AppCompatActivity {
     private PlayerUiState lastState;
     private AudioManager audioManager;
     private ContentObserver volumeObserver;
+    private final Handler volumePollHandler = new Handler(Looper.getMainLooper());
+    private final Runnable volumePoll = new Runnable() {
+        @Override
+        public void run() {
+            syncVolumeSlider();
+            volumePollHandler.postDelayed(this, 400);
+        }
+    };
 
     private final StateBus.Listener stateListener = state -> {
         lastState = state;
@@ -183,7 +191,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void syncVolumeSlider() {
         if (audioManager != null && volumeSeek != null) {
-            volumeSeek.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+            int current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+            if (volumeSeek.getProgress() != current) {
+                volumeSeek.setProgress(current);
+            }
         }
     }
 
@@ -211,17 +222,21 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         StateBus.get().addListener(stateListener);
         syncVolumeSlider();
+        volumePollHandler.removeCallbacks(volumePoll);
+        volumePollHandler.postDelayed(volumePoll, 400);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         StateBus.get().removeListener(stateListener);
+        volumePollHandler.removeCallbacks(volumePoll);
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        volumePollHandler.removeCallbacks(volumePoll);
         if (volumeObserver != null) {
             try {
                 getContentResolver().unregisterContentObserver(volumeObserver);
