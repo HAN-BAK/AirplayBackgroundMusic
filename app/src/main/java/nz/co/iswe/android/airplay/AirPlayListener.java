@@ -29,4 +29,20 @@ public interface AirPlayListener {
 
 	/** Sender requested a volume change. Value is in dB, 0 = unity. */
 	void onAirPlayVolume(float volumeDb);
+
+	/** Classic metadata: current track title/artist/album (may be null). */
+	default void onAirPlayMetadata(String title, String artist, String album) {
+	}
+
+	/** Classic metadata: cover art (JPEG/PNG bytes). */
+	default void onAirPlayCoverArt(byte[] imageData) {
+	}
+
+	/** Classic metadata: playback progress (milliseconds). */
+	default void onAirPlayProgress(long positionMs, long durationMs) {
+	}
+
+	/** Classic play-state event ('prsm'/'prss'/'pbeg' = playing, 'paus'/'pend' = paused). */
+	default void onAirPlayPlayState(boolean playing) {
+	}
 }

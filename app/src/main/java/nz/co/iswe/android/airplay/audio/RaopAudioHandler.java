@@ -43,10 +43,12 @@ import nz.co.iswe.android.airplay.network.ExceptionLoggingHandler;
 import nz.co.iswe.android.airplay.network.RtpEncodeHandler;
 import nz.co.iswe.android.airplay.network.RtpLoggingHandler;
 import nz.co.iswe.android.airplay.network.raop.RaopRtpDecodeHandler;
+import nz.co.iswe.android.airplay.network.raop.RaopRtpMetadataHandler;
 import nz.co.iswe.android.airplay.network.raop.RaopRtpPacket;
 import nz.co.iswe.android.airplay.network.raop.RaopRtpTimingHandler;
 
 import org.jboss.netty.bootstrap.ConnectionlessBootstrap;
+import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.buffer.ChannelBuffers;
 import org.jboss.netty.channel.Channel;
 import org.jboss.netty.channel.ChannelFuture;
@@ -66,6 +68,7 @@ import org.jboss.netty.channel.group.ChannelGroup;
 import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.socket.oio.OioDatagramChannelFactory;
 import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
+import org.jboss.netty.handler.codec.http.HttpHeaders;
 import org.jboss.netty.handler.codec.http.HttpMethod;
 import org.jboss.netty.handler.codec.http.HttpRequest;
 import org.jboss.netty.handler.codec.http.HttpResponse;
@@ -401,8 +404,53 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 			getParameterReceived(ctx, req);
 			return;
 		}
+		else if (HttpMethod.POST.equals(method)) {
+			postReceived(ctx, req);
+			return;
+		}
 
 		super.messageReceived(ctx, evt);
+	}
+
+	/**
+	 * Handles POST requests. Classic AirPlay sends the cover art as a large
+	 * POST body (image/jpeg etc.); other POSTs (e.g. /feedback) should simply
+	 * be acknowledged so the sender does not tear the session down.
+	 */
+	private void postReceived(final ChannelHandlerContext ctx, final HttpRequest req) {
+		String contentType = "";
+		try {
+			contentType = req.headers().get(HttpHeaders.Names.CONTENT_TYPE);
+		} catch (final Throwable ignored) {
+		}
+		final String contentLength = req.headers().get(HttpHeaders.Names.CONTENT_LENGTH);
+		LOG.info("Received POST " + req.getUri() + " Content-Type: " + contentType
+				+ " Content-Length: " + contentLength);
+
+		final org.jboss.netty.buffer.ChannelBuffer content = req.getContent();
+		if (content != null && content.readableBytes() > 0) {
+			final byte[] body = new byte[content.readableBytes()];
+			content.getBytes(0, body);
+			final boolean image = (contentType != null && contentType.toLowerCase().contains("image"))
+					|| isImageBytes(body);
+			if (image) {
+				LOG.info("Cover art received via POST (" + body.length + " bytes)");
+				final AirPlayServer server = AirPlayServer.getIstance();
+				final AirPlayListener listener = server.getListener();
+				if (listener != null) {
+					listener.onAirPlayCoverArt(body);
+				}
+			}
+		}
+
+		final HttpResponse response = new DefaultHttpResponse(RtspVersions.RTSP_1_0, RtspResponseStatuses.OK);
+		ctx.getChannel().write(response);
+	}
+
+	private static boolean isImageBytes(final byte[] bytes) {
+		return bytes.length > 8
+				&& ((bytes[0] == (byte) 0xFF && bytes[1] == (byte) 0xD8 && bytes[2] == (byte) 0xFF)
+						|| (bytes[0] == (byte) 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47));
 	}
 
 	/**
@@ -858,44 +906,176 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 	/**
 	 * Handle SET_PARAMETER request. Currently only {@code volume} is supported
 	 */
-	public synchronized void setParameterReceived(final ChannelHandlerContext ctx, final HttpRequest req) throws ProtocolException {
-		/* Body in ASCII encoding with unix newlines */
-		final String body = req.getContent().toString(Charset.forName("ASCII")).replace("\r", "");
+	public synchronized void setParameterReceived(final ChannelHandlerContext ctx, final HttpRequest req) {
+		/* Body is usually ASCII "name: value" lines; newer iOS may send a
+		 * binary/plist body, plus classic metadata (cover art, a DMAP track
+		 * record and "progress:" lines). Parsing is best-effort: never let an
+		 * unparseable parameter kill the session. */
+		final ChannelBuffer content = req.getContent();
+		final byte[] bodyBytes = new byte[content.readableBytes()];
+		content.getBytes(0, bodyBytes);
 
-		/* Handle parameters */
-		for(final String line: body.split("\n")) {
+		final AirPlayServer server = AirPlayServer.getIstance();
+		final AirPlayListener listener = server.getListener();
+
+		/* 1. Cover art: JPEG/PNG binary body */
+		if (bodyBytes.length > 16 && isImageBytes(bodyBytes)) {
+			LOG.info("Cover art received via SET_PARAMETER (" + bodyBytes.length + " bytes)");
+			if (listener != null) listener.onAirPlayCoverArt(bodyBytes);
+			respondOk(ctx);
+			return;
+		}
+
+		/* 2. DMAP track record: starts with a 4-byte code (e.g. mlit) */
+		if (bodyBytes.length > 8 && isDmap(bodyBytes)) {
+			final String[] info = parseDmapTrack(bodyBytes);
+			LOG.info("Track metadata via SET_PARAMETER: " + (info[0] != null ? info[0] : "?")
+					+ " / " + (info[1] != null ? info[1] : "?") + " / " + (info[2] != null ? info[2] : "?"));
+			if (listener != null) listener.onAirPlayMetadata(info[0], info[1], info[2]);
+			respondOk(ctx);
+			return;
+		}
+
+		final String body = new String(bodyBytes, Charset.forName("ASCII")).replace("\r", "");
+
+		/* 3. Text "name: value" lines: volume, progress, ... */
+		for (final String line : body.split("\n")) {
 			try {
-				/* Split parameter into name and value */
 				final Matcher m_parameter = s_pattern_parameter.matcher(line);
-				if (!m_parameter.matches()){
-					throw new ProtocolException("Cannot parse line " + line);
+				if (!m_parameter.matches()) {
+					continue;
 				}
-
 				final String name = m_parameter.group(1);
 				final String value = m_parameter.group(2);
-
 				if ("volume".equals(name)) {
-					/* Set output gain */
-					if (audioOutputQueue != null){
-						final float volumeDb = Float.parseFloat(value);
-						audioOutputQueue.setRequestedVolume(volumeDb);
-
-						final AirPlayServer server = AirPlayServer.getIstance();
-						final AirPlayListener listener = server.getListener();
-						if (listener != null) {
-							listener.onAirPlayVolume(volumeDb);
-						}
+					try {
+						applyVolume(Float.parseFloat(value));
+					} catch (final Throwable ignored) {
 					}
-
 				}
-			}
-			catch (final Throwable e) {
-				throw new ProtocolException("Unable to parse line " + line);
+				else if ("progress".equals(name)) {
+					parseProgress(value);
+				}
+			} catch (final Throwable ignored) {
 			}
 		}
 
-		final HttpResponse response = new DefaultHttpResponse(RtspVersions.RTSP_1_0,  RtspResponseStatuses.OK);
+		final HttpResponse response = new DefaultHttpResponse(RtspVersions.RTSP_1_0, RtspResponseStatuses.OK);
 		ctx.getChannel().write(response);
+	}
+
+	private void respondOk(final ChannelHandlerContext ctx) {
+		final HttpResponse response = new DefaultHttpResponse(RtspVersions.RTSP_1_0, RtspResponseStatuses.OK);
+		ctx.getChannel().write(response);
+	}
+
+	/** "progress: <position>/<duration>" -- values are usually milliseconds. */
+	private void parseProgress(final String value) {
+		try {
+			final String[] parts = value.split("/");
+			if (parts.length < 1) return;
+			final long position = Long.parseLong(parts[0].trim());
+			long duration = 0;
+			if (parts.length > 1) {
+				try {
+					duration = Long.parseLong(parts[1].trim());
+				} catch (final NumberFormatException ignored) {
+				}
+			}
+			final AirPlayServer server = AirPlayServer.getIstance();
+			final AirPlayListener listener = server.getListener();
+			if (listener != null) {
+				listener.onAirPlayProgress(position, duration);
+			}
+		} catch (final Throwable ignored) {
+		}
+	}
+
+	private static boolean isDmap(final byte[] bytes) {
+		for (int i = 0; i < 4; i++) {
+			final int c = bytes[i] & 0xff;
+			if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && c != ' ' && c != '_') {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Parses a binary DMAP record for minm (title), asar (artist),
+	 * asal (album). Items are 4-byte code + 4-byte big-endian length + value.
+	 */
+	private static String[] parseDmapTrack(final byte[] bytes) {
+		String title = null;
+		String artist = null;
+		String album = null;
+		final int end = bytes.length;
+		int p = 0;
+		while (p + 8 <= end) {
+			final int len = ((bytes[p + 4] & 0xff) << 24) | ((bytes[p + 5] & 0xff) << 16)
+					| ((bytes[p + 6] & 0xff) << 8) | (bytes[p + 7] & 0xff);
+			if (len < 0 || p + 8 + len > end) {
+				break;
+			}
+			final String key = new String(bytes, p, 4, Charset.forName("US-ASCII"));
+			final int valueStart = p + 8;
+			if ("mlit".equals(key) || "cmst".equals(key) || "ceMs".equals(key) || "cmgt".equals(key)) {
+				// Recurse into containers
+				final String[] nested = parseDmapTrackRange(bytes, valueStart, valueStart + len);
+				if (title == null) title = nested[0];
+				if (artist == null) artist = nested[1];
+				if (album == null) album = nested[2];
+			} else if ("minm".equals(key)) {
+				title = new String(bytes, valueStart, len, Charset.forName("UTF-8")).trim();
+			} else if ("asar".equals(key)) {
+				artist = new String(bytes, valueStart, len, Charset.forName("UTF-8")).trim();
+			} else if ("asal".equals(key)) {
+				album = new String(bytes, valueStart, len, Charset.forName("UTF-8")).trim();
+			}
+			p += 8 + len;
+		}
+		return new String[] { title, artist, album };
+	}
+
+	private static String[] parseDmapTrackRange(final byte[] bytes, final int start, final int end) {
+		String title = null;
+		String artist = null;
+		String album = null;
+		int p = start;
+		while (p + 8 <= end) {
+			final int len = ((bytes[p + 4] & 0xff) << 24) | ((bytes[p + 5] & 0xff) << 16)
+					| ((bytes[p + 6] & 0xff) << 8) | (bytes[p + 7] & 0xff);
+			if (len < 0 || p + 8 + len > end) {
+				break;
+			}
+			final String key = new String(bytes, p, 4, Charset.forName("US-ASCII"));
+			final int valueStart = p + 8;
+			if ("mlit".equals(key) || "cmst".equals(key) || "ceMs".equals(key) || "cmgt".equals(key)) {
+				final String[] nested = parseDmapTrackRange(bytes, valueStart, valueStart + len);
+				if (title == null) title = nested[0];
+				if (artist == null) artist = nested[1];
+				if (album == null) album = nested[2];
+			} else if ("minm".equals(key)) {
+				title = new String(bytes, valueStart, len, Charset.forName("UTF-8")).trim();
+			} else if ("asar".equals(key)) {
+				artist = new String(bytes, valueStart, len, Charset.forName("UTF-8")).trim();
+			} else if ("asal".equals(key)) {
+				album = new String(bytes, valueStart, len, Charset.forName("UTF-8")).trim();
+			}
+			p += 8 + len;
+		}
+		return new String[] { title, artist, album };
+	}
+
+	private void applyVolume(final float volumeDb) {
+		if (audioOutputQueue != null) {
+			audioOutputQueue.setRequestedVolume(volumeDb);
+		}
+		final AirPlayServer server = AirPlayServer.getIstance();
+		final AirPlayListener listener = server.getListener();
+		if (listener != null) {
+			listener.onAirPlayVolume(volumeDb);
+		}
 	}
 
 	/**
@@ -952,6 +1132,7 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 				pipeline.addLast("exceptionLogger", exceptionLoggingHandler);
 				pipeline.addLast("decoder", decodeHandler);
 				pipeline.addLast("encoder", encodeHandler);
+				pipeline.addLast("metadata", new RaopRtpMetadataHandler(AirPlayServer.getIstance().getListener()));
 				
 				/* We pretend that all communication takes place on the audio channel,
 				 * and simply re-route packets from and to the control and timing channels

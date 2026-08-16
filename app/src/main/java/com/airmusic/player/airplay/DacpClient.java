@@ -104,7 +104,16 @@ public class DacpClient {
                 if (callback != null) callback.onPlayStatus(-1);
                 return;
             }
-            byte[] response = requestBytes(addr, "playstatusupdate?revision-number=0");
+            byte[] response = requestBytes(addr, "playstatusupdate?revision-number=1");
+            if (response == null) {
+                address.set(null);
+                discoveryAttempted = false;
+                ensureDiscovered();
+                InetSocketAddress addr2 = address.get();
+                if (addr2 != null && !addr2.equals(addr)) {
+                    response = requestBytes(addr2, "playstatusupdate?revision-number=1");
+                }
+            }
             int status = parsePlayStatus(response);
             if (callback != null) callback.onPlayStatus(status);
         });
@@ -126,7 +135,18 @@ public class DacpClient {
                 Log.w(TAG, "DACP address unavailable, command dropped: " + path);
                 return;
             }
-            send(addr, path);
+            byte[] result = requestBytes(addr, path);
+            if (result == null) {
+                // The DACP port changes between sessions; the cached address
+                // may be stale. Rediscover once and retry.
+                address.set(null);
+                discoveryAttempted = false;
+                ensureDiscovered();
+                InetSocketAddress addr2 = address.get();
+                if (addr2 != null && !addr2.equals(addr)) {
+                    requestBytes(addr2, path);
+                }
+            }
         });
     }
 
@@ -211,7 +231,6 @@ public class DacpClient {
             socket.setSoTimeout(1500);
             String request = "GET /ctrl-int/1/" + path + " HTTP/1.1\r\n"
                     + "Active-Remote: " + activeRemote + "\r\n"
-                    + "Viewer-Only-Client: 1\r\n"
                     + "Host: " + addr.getAddress().getHostAddress() + ":" + addr.getPort() + "\r\n"
                     + "\r\n";
             OutputStream out = socket.getOutputStream();

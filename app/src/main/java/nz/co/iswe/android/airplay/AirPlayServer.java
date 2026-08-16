@@ -81,6 +81,9 @@ public class AirPlayServer implements Runnable {
 		"ek", "1",
 		"et", "0,1",
 		"cn", "0,1",
+		// Request classic AirPlay metadata: 0 = text, 1 = artwork, 2 = progress.
+		// Without this flag iOS does not send cover art / song info / progress.
+		"md", "0,1,2",
 		"vn", "3"
 	);
 

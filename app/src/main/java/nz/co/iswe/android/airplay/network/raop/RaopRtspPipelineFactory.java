@@ -57,7 +57,11 @@ public class RaopRtspPipelineFactory implements ChannelPipelineFactory {
 			}
 		});
 		pipeline.addLast("exceptionLogger", new ExceptionLoggingHandler());
-		pipeline.addLast("decoder", new RtspRequestDecoder());
+		// The default RtspRequestDecoder limits HTTP bodies to 8192 bytes.
+		// Classic AirPlay sends the cover art as a large RTSP POST, so raise
+		// the content limit to 4 MiB; otherwise the session is torn down with
+		// "HTTP content length exceeded".
+		pipeline.addLast("decoder", new RtspRequestDecoder(4096, 8192, 4 * 1024 * 1024));
 		pipeline.addLast("encoder", new RtspResponseEncoder());
 		pipeline.addLast("logger", new RtspLoggingHandler());
 		pipeline.addLast("errorResponse", new RtspErrorResponseHandler());

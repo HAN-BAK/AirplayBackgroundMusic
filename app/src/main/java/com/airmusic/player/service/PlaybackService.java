@@ -248,6 +248,34 @@ public class PlaybackService extends Service {
         public void onVolume(float volumeDb) {
             Log.d(TAG, "AirPlay volume: " + volumeDb);
         }
+
+        @Override
+        public void onTrackInfo(String title, String artist, String album, Bitmap art, long durationMs) {
+            main.post(() -> applyAirPlayTrackInfo(title, artist, album, art, durationMs));
+        }
+
+        @Override
+        public void onProgress(long positionMs, long durationMs) {
+            main.post(() -> {
+                if (state.source == PlayerUiState.Source.AIRPLAY) {
+                    state.positionMs = (int) positionMs;
+                    if (durationMs > 0) state.durationMs = (int) durationMs;
+                    publish();
+                }
+            });
+        }
+
+        @Override
+        public void onPlayState(boolean playing) {
+            main.post(() -> {
+                if (state.source != PlayerUiState.Source.AIRPLAY) return;
+                if (playing && !state.playing) {
+                    handleAirPlayStart(state.clientName, "", "", "", false);
+                } else if (!playing && state.playing) {
+                    handleAirPlayPause();
+                }
+            });
+        }
     };
 
     @Override
@@ -562,6 +590,25 @@ public class PlaybackService extends Service {
         fadeAirPlayIn();
 		publish();
 	}
+
+    /**
+     * Updates the UI with classic AirPlay track metadata (text + artwork).
+     * Fields may arrive in separate packets, so null fields keep the current
+     * value; the session must be active for the info to be shown.
+     */
+    private void applyAirPlayTrackInfo(String title, String artist, String album, Bitmap art, long durationMs) {
+        if (state.source != PlayerUiState.Source.AIRPLAY) {
+            return;
+        }
+        Log.i(TAG, "AirPlay metadata: title=" + title + " artist=" + artist + " album=" + album
+                + " art=" + (art != null) + " dur=" + durationMs);
+        if (title != null && title.trim().length() > 0) state.title = title.trim();
+        if (artist != null && artist.trim().length() > 0) state.artist = artist.trim();
+        if (album != null && album.trim().length() > 0) state.album = album.trim();
+        if (art != null) state.art = art;
+        if (durationMs > 0) state.durationMs = (int) durationMs;
+        publish();
+    }
 
     private void handleAirPlayPause() {
         cancelAirFade();

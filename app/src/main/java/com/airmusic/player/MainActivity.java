@@ -252,7 +252,13 @@ public class MainActivity extends AppCompatActivity {
         trackAlbum.setText(s.album);
 
         Bitmap art = s.art;
-        if (s.source == PlayerUiState.Source.AIRPLAY || s.source == PlayerUiState.Source.IDLE) {
+        if (s.source == PlayerUiState.Source.AIRPLAY) {
+            if (art != null) {
+                albumArt.setImageBitmap(art);
+            } else {
+                albumArt.setImageResource(R.drawable.ic_airplay);
+            }
+        } else if (s.source == PlayerUiState.Source.IDLE) {
             albumArt.setImageResource(R.drawable.ic_airplay);
         } else {
             albumArt.setImageResource(R.drawable.ic_music_note);

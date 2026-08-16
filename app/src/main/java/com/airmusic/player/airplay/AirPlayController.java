@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.wifi.WifiManager;
@@ -45,6 +47,18 @@ public class AirPlayController {
         void onSessionStop();
 
         void onVolume(float volumeDb);
+
+        /** Track metadata from classic AirPlay (any field may be null). */
+        default void onTrackInfo(String title, String artist, String album, Bitmap art, long durationMs) {
+        }
+
+        /** Playback progress (milliseconds). */
+        default void onProgress(long positionMs, long durationMs) {
+        }
+
+        /** Play/pause state reported by the sender. */
+        default void onPlayState(boolean playing) {
+        }
     }
 
     private final Context context;
@@ -148,6 +162,31 @@ public class AirPlayController {
             @Override
             public void onAirPlayVolume(float volumeDb) {
                 if (events != null) events.onVolume(volumeDb);
+			}
+
+			@Override
+			public void onAirPlayMetadata(String title, String artist, String album) {
+				if (events != null) events.onTrackInfo(title, artist, album, null, -1);
+			}
+
+			@Override
+			public void onAirPlayCoverArt(byte[] imageData) {
+				try {
+					Bitmap bmp = BitmapFactory.decodeByteArray(imageData, 0, imageData.length);
+					if (events != null) events.onTrackInfo(null, null, null, bmp, -1);
+				} catch (Throwable t) {
+					Log.w(TAG, "cover art decode failed", t);
+				}
+			}
+
+			@Override
+			public void onAirPlayProgress(long positionMs, long durationMs) {
+				if (events != null) events.onProgress(positionMs, durationMs);
+			}
+
+			@Override
+			public void onAirPlayPlayState(boolean playing) {
+				if (events != null) events.onPlayState(playing);
 			}
 		});
 
