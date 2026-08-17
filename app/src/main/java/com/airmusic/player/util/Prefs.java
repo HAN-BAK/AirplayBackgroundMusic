@@ -2,6 +2,8 @@ package com.airmusic.player.util;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Build;
+import android.provider.Settings;
 
 /**
  * Central place for app settings.
@@ -22,18 +24,38 @@ public final class Prefs {
     private static final String KEY_PLAY_MODE = "play_mode";
     private static final String KEY_AUTO_PLAY = "auto_play_on_start";
     private static final String KEY_BALANCE = "balance";
+    private static final String KEY_MULTICAST_DELAY_COMP = "multicast_delay_comp_ms";
 
     private static final String KEY_LAST_TRACK_URI = "last_track_uri";
     private static final String KEY_LAST_TRACK_POSITION = "last_track_position";
 
+    private final Context context;
     private final SharedPreferences sp;
 
     public Prefs(Context context) {
-        sp = context.getApplicationContext().getSharedPreferences(FILE, Context.MODE_PRIVATE);
+        this.context = context.getApplicationContext();
+        sp = this.context.getSharedPreferences(FILE, Context.MODE_PRIVATE);
     }
 
     public String getAirPlayName() {
-        return sp.getString(KEY_AIRPLAY_NAME, "AirPlay音箱");
+        String saved = sp.getString(KEY_AIRPLAY_NAME, null);
+        if (saved != null && saved.trim().length() > 0) {
+            return saved.trim();
+        }
+        return getSystemDeviceName();
+    }
+
+    /** The device name configured in Android system settings. */
+    private String getSystemDeviceName() {
+        try {
+            if (Build.VERSION.SDK_INT >= 25) {
+                String n = Settings.Global.getString(
+                        context.getContentResolver(), Settings.Global.DEVICE_NAME);
+                if (n != null && n.trim().length() > 0) return n.trim();
+            }
+        } catch (Throwable ignored) {
+        }
+        return Build.MODEL;
     }
 
     public void setAirPlayName(String name) {
@@ -103,6 +125,16 @@ public final class Prefs {
     public void setBalance(float balance) {
         float clamped = Math.max(-1f, Math.min(1f, balance));
         sp.edit().putFloat(KEY_BALANCE, clamped).apply();
+    }
+
+    /** Receiver-side latency compensation for multi-room sync (-500..500 ms). */
+    public int getMulticastDelayCompMs() {
+        return sp.getInt(KEY_MULTICAST_DELAY_COMP, 0);
+    }
+
+    public void setMulticastDelayCompMs(int ms) {
+        int clamped = Math.max(-500, Math.min(500, ms));
+        sp.edit().putInt(KEY_MULTICAST_DELAY_COMP, clamped).apply();
     }
 
     public String getLastTrackUri() {

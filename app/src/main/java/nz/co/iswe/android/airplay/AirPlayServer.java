@@ -109,6 +109,9 @@ public class AirPlayServer implements Runnable {
 
 	/** JmDNS responders (one per network interface). */
 	protected List<JmDNS> jmDNSInstances;
+	/** Auxiliary services already registered per JmDNS instance ("type|name"). */
+	private final java.util.Map<JmDNS, java.util.Set<String>> auxiliaryRegistered =
+			new java.util.HashMap<JmDNS, java.util.Set<String>>();
 
 	/** The RTSP server bootstrap. */
 	private ServerBootstrap rtspBootstrap;
@@ -379,6 +382,59 @@ public class AirPlayServer implements Runnable {
 				}
 			}
 			jmDNSInstances.clear();
+			auxiliaryRegistered.clear();
+		}
+	}
+
+	/**
+	 * Registers an auxiliary mDNS service (e.g. multi-room sync) on the same
+	 * JmDNS instances used by the AirTunes service, so it is announced on
+	 * every usable interface without port-5353 conflicts.
+	 *
+	 * @return the number of interfaces on which registration succeeded
+	 */
+	public int registerAuxiliaryService(final String serviceType, final String instanceName,
+										final int port, final java.util.Map<String, String> txt) {
+		int registered = 0;
+		synchronized (jmDNSInstances) {
+			for (final JmDNS jmDNS : jmDNSInstances) {
+				final String key = serviceType + "|" + instanceName;
+				java.util.Set<String> set = auxiliaryRegistered.get(jmDNS);
+				if (set == null) {
+					set = new java.util.HashSet<String>();
+					auxiliaryRegistered.put(jmDNS, set);
+				}
+				if (set.contains(key)) {
+					continue; // already registered on this instance -- no rename
+				}
+				try {
+					final ServiceInfo info = ServiceInfo.create(serviceType, instanceName, port, 0, 0,
+							txt != null ? txt : java.util.Collections.<String, String>emptyMap());
+					jmDNS.registerService(info);
+					set.add(key);
+					registered++;
+				} catch (final Throwable e) {
+					LOG.log(Level.WARNING, "Failed to register auxiliary service", e);
+				}
+			}
+		}
+		return registered;
+	}
+
+	/** Returns one JmDNS instance (for browsing); null if not registered yet. */
+	public JmDNS getPrimaryJmDNS() {
+		synchronized (jmDNSInstances) {
+			if (!jmDNSInstances.isEmpty()) {
+				return jmDNSInstances.get(0);
+			}
+		}
+		return null;
+	}
+
+	/** Snapshot of all active JmDNS instances (one per network interface). */
+	public java.util.List<JmDNS> getJmDNSInstances() {
+		synchronized (jmDNSInstances) {
+			return new java.util.ArrayList<JmDNS>(jmDNSInstances);
 		}
 	}
 

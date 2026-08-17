@@ -9,7 +9,7 @@ import com.airmusic.player.playback.PlayMode;
  */
 public class PlayerUiState {
 
-    public enum Source { IDLE, LOCAL, AIRPLAY }
+    public enum Source { IDLE, LOCAL, AIRPLAY, REMOTE }
 
     public Source source = Source.IDLE;
     public boolean playing;

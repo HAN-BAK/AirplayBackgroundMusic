@@ -32,6 +32,10 @@ import com.airmusic.player.airplay.AirPlayController;
 import com.airmusic.player.airplay.DacpClient;
 import com.airmusic.player.library.MusicLibrary;
 import com.airmusic.player.library.Track;
+import com.airmusic.player.multicast.MultiRoomDiscovery;
+import com.airmusic.player.multicast.MultiRoomAudioPlayer;
+import com.airmusic.player.multicast.MultiRoomManager;
+import com.airmusic.player.multicast.MultiRoomStreamer;
 import com.airmusic.player.playback.LocalPlayer;
 import com.airmusic.player.playback.PlayMode;
 import com.airmusic.player.receiver.UsbMediaReceiver;
@@ -93,6 +97,13 @@ public class PlaybackService extends Service {
     private AirPlayController airPlayController;
     private DacpClient dacpClient;
     private LocalPlayer localPlayer;
+    private MultiRoomManager multiRoomManager;
+    private MultiRoomStreamer multiRoomStreamer;
+    private MultiRoomAudioPlayer multiRoomAudioPlayer;
+    /** Last embedded cover art bytes for the current local track. */
+    private byte[] lastArtBytes;
+    /** While true, multi-room streamer syncs are deferred (during a seek). */
+    private boolean suppressStreamerSync;
     private MediaSessionCompat mediaSession;
     private PowerManager.WakeLock wakeLock;
     private UsbMediaReceiver usbMediaReceiver;
@@ -106,6 +117,24 @@ public class PlaybackService extends Service {
     private boolean airPlayUserPaused;
     /** True after the audio watchdog declared a phone-side pause. */
     private boolean airPlayWatchdogPaused;
+    /** Restore local / AirPlay playback after the multi-room session ends. */
+    private boolean resumeLocalAfterMultiRoom;
+    private boolean resumeAirPlayAfterMultiRoom;
+    /** AirPlay interrupted multi-room; restore multi-room when AirPlay ends. */
+    private boolean resumeMultiRoomAfterAirPlay;
+    /** Last known AirPlay metadata, restored after a multi-room session. */
+    private String airMetaTitle = "";
+    private String airMetaArtist = "";
+    private String airMetaAlbum = "";
+    private Bitmap airMetaArt;
+    private long airMetaDurationMs;
+    /** Last known multi-room metadata, restored after an AirPlay interruption. */
+    private String multiRoomMetaTitle = "";
+    private String multiRoomMetaArtist = "";
+    private String multiRoomMetaAlbum = "";
+    private Bitmap multiRoomMetaArt;
+    private long multiRoomMetaDurationMs;
+    private Runnable multiRoomFadeRunnable;
 
     private final Runnable ticker = new Runnable() {
         @Override
@@ -200,6 +229,12 @@ public class PlaybackService extends Service {
         @Override
         public void onLocalTrackChanged(Track track) {
             loadMetadata(track);
+            if (multiRoomManager != null && multiRoomManager.hasTargets()) {
+                multiRoomManager.sendMeta(
+                        track.displayTitle(), track.displayArtist(), track.displayAlbum(), track.durationMs);
+            }
+            syncMultiRoomStreamer();
+            scheduleMultiRoomCalibration();
         }
 
         @Override
@@ -209,6 +244,18 @@ public class PlaybackService extends Service {
 				publish();
 				saveLastTrack();
 			}
+            if (multiRoomManager != null && multiRoomManager.hasTargets()) {
+                if (playing) {
+                    multiRoomManager.sendPlay(localPlayer.getPosition());
+                } else {
+                    multiRoomManager.sendFlush();
+                    multiRoomManager.sendPause();
+                }
+                syncMultiRoomStreamer();
+            }
+            if (playing) {
+                scheduleMultiRoomCalibration();
+            }
         }
 
         @Override
@@ -218,6 +265,513 @@ public class PlaybackService extends Service {
 				state.playing = false;
 				publish();
 			}
+            if (multiRoomManager != null && multiRoomManager.hasTargets()) {
+                multiRoomManager.sendStop();
+            }
+            stopMultiRoomStreamer();
+        }
+    };
+
+    /**
+     * Receiver side of multi-room sync: a master device pushes metadata,
+     * cover art and play state; this device mirrors them in the UI. PCM audio
+     * streaming arrives in the next phase.
+     */
+    private void pushMultiRoomState() {
+        MultiRoomManager m = multiRoomManager;
+        if (m == null || !m.hasTargets()) return;
+        m.sendMeta(state.title, state.artist, state.album, state.durationMs);
+        if (lastArtBytes != null && lastArtBytes.length > 0) {
+            m.sendArt(lastArtBytes);
+        }
+        if (state.source == PlayerUiState.Source.LOCAL && state.playing) {
+            m.sendPlay(localPlayer.getPosition());
+        } else if (state.source == PlayerUiState.Source.LOCAL) {
+            m.sendPause();
+        }
+        syncMultiRoomStreamer();
+    }
+
+    /**
+     * Receiver side: a master started streaming to this device. Pause any
+     * local or AirPlay playback so multi-room audio is the only source; the
+     * flags below tell {@link #exitMultiRoomRemoteMode()} what to restore.
+     */
+    private void enterMultiRoomRemoteMode() {
+        if (state.source == PlayerUiState.Source.REMOTE) return;
+        Log.i(TAG, "enter multi-room remote, current source=" + state.source);
+        if (state.source == PlayerUiState.Source.LOCAL && localPlayer.isPlaying()) {
+            resumeLocalAfterMultiRoom = true;
+            resumeAirPlayAfterMultiRoom = false;
+            fadeLocalOut(localPlayer::pause);
+        } else if (state.source == PlayerUiState.Source.AIRPLAY && state.playing) {
+            resumeAirPlayAfterMultiRoom = true;
+            resumeLocalAfterMultiRoom = false;
+            // Silencing the receiver output keeps the iOS session alive:
+            // a DACP pause makes iOS tear down the session, so it could not
+            // be restored after multi-room ends.
+            airPlayUserPaused = false;
+            airPlayController.setVolumeGain(0f);
+            airPlayController.pauseReceiverOutput();
+        } else {
+            resumeLocalAfterMultiRoom = false;
+            resumeAirPlayAfterMultiRoom = false;
+        }
+    }
+
+    /** Receiver side: the multi-room session ended; restore what was paused. */
+    private void exitMultiRoomRemoteMode() {
+        final boolean restoreLocal = resumeLocalAfterMultiRoom
+                && localPlayer.getCurrentTrack() != null;
+        final boolean restoreAirPlay = resumeAirPlayAfterMultiRoom && airPlaySessionActive;
+        resumeLocalAfterMultiRoom = false;
+        resumeAirPlayAfterMultiRoom = false;
+
+        // 2500 ms fade-out of the multi-room audio, then hand back to the
+        // previous source with its own fade-in.
+        fadeMultiRoomOut(() -> {
+            if (restoreLocal) {
+                if (multiRoomAudioPlayer != null) multiRoomAudioPlayer.stop();
+                cancelFade();
+                localFade = 0f;
+                localPlayer.setMasterGain(0f);
+                localPlayer.play();
+                state.source = PlayerUiState.Source.LOCAL;
+                state.playing = true;
+                fadeLocalIn(250);
+                switchToLocalTrack();
+            } else if (restoreAirPlay) {
+                if (multiRoomAudioPlayer != null) multiRoomAudioPlayer.stop();
+                // Restore the AirPlay metadata that was shown before.
+                state.title = airMetaTitle.length() > 0 ? airMetaTitle : "AirPlay 播放";
+                state.artist = airMetaArtist;
+                state.album = airMetaAlbum;
+                state.art = airMetaArt;
+                if (airMetaDurationMs > 0) state.durationMs = (int) airMetaDurationMs;
+                airPlayController.resumeReceiverOutput();
+                airPlayController.setVolumeGain(0f);
+                state.source = PlayerUiState.Source.AIRPLAY;
+                state.playing = true;
+                publish();
+                fadeAirPlayIn(250);
+            } else {
+                if (multiRoomAudioPlayer != null) multiRoomAudioPlayer.stop();
+                state.source = PlayerUiState.Source.IDLE;
+                state.playing = false;
+                state.title = "未在播放";
+                state.artist = "";
+                state.album = "";
+                state.art = null;
+                publish();
+            }
+        });
+    }
+
+    /** Fades the multi-room audio player's output down over 2500 ms. */
+    private void fadeMultiRoomOut(Runnable onDone) {
+        cancelMultiRoomFade();
+        MultiRoomAudioPlayer p = multiRoomAudioPlayer;
+        if (p == null || !p.isRunning()) {
+            // Nothing playing: complete immediately so state restores fast.
+            if (onDone != null) onDone.run();
+            return;
+        }
+        final long durationMs = 2500;
+        final long stepMs = 25;
+        final int steps = (int) (durationMs / stepMs);
+        final float[] stepCount = {0};
+        multiRoomFadeRunnable = new Runnable() {
+            @Override
+            public void run() {
+                stepCount[0]++;
+                float gain = Math.max(0f, 1f - stepCount[0] / (float) steps);
+                if (p != null) {
+                    p.setOutputGain(gain);
+                }
+                if (stepCount[0] >= steps) {
+                    if (p != null) {
+                        p.setOutputGain(0f);
+                    }
+                    multiRoomFadeRunnable = null;
+                    if (onDone != null) onDone.run();
+                    return;
+                }
+                main.postDelayed(this, stepMs);
+            }
+        };
+        main.post(multiRoomFadeRunnable);
+    }
+
+    /** Fades the multi-room audio player's output up to full over 2500 ms. */
+    private void fadeMultiRoomIn() {
+        cancelMultiRoomFade();
+        final long durationMs = 2500;
+        final long stepMs = 25;
+        final int steps = (int) (durationMs / stepMs);
+        final float[] stepCount = {0};
+        multiRoomFadeRunnable = new Runnable() {
+            @Override
+            public void run() {
+                stepCount[0]++;
+                float gain = Math.min(1f, stepCount[0] / (float) steps);
+                if (multiRoomAudioPlayer != null) {
+                    multiRoomAudioPlayer.setOutputGain(gain);
+                }
+                if (stepCount[0] >= steps) {
+                    if (multiRoomAudioPlayer != null) {
+                        multiRoomAudioPlayer.setOutputGain(1f);
+                    }
+                    multiRoomFadeRunnable = null;
+                    return;
+                }
+                main.postDelayed(this, stepMs);
+            }
+        };
+        main.post(multiRoomFadeRunnable);
+    }
+
+    private void cancelMultiRoomFade() {
+        if (multiRoomFadeRunnable != null) {
+            main.removeCallbacks(multiRoomFadeRunnable);
+            multiRoomFadeRunnable = null;
+        }
+    }
+
+    /** Starts/stops the PCM streamer to match local playback + targets. */
+    private void syncMultiRoomStreamer() {
+        if (suppressStreamerSync) return;
+        MultiRoomManager m = multiRoomManager;
+        if (m == null || !m.hasTargets() || state.source != PlayerUiState.Source.LOCAL
+                || !state.playing) {
+            stopMultiRoomStreamer();
+            return;
+        }
+        Track track = localPlayer.getCurrentTrack();
+        if (track == null) {
+            stopMultiRoomStreamer();
+            return;
+        }
+        if (multiRoomStreamer != null && !multiRoomStreamer.getUri().equals(track.uri)) {
+            // Track changed: tear down and start a fresh stream from 0.
+            stopMultiRoomStreamer();
+        }
+        if (multiRoomStreamer == null) {
+            long startPos = Math.max(0, (long) localPlayer.getPosition());
+            long startWall = System.currentTimeMillis() - startPos;
+            // The pushed stream is this device's audible output too, so the
+            // ExoPlayer is muted (it stays running as the session brain).
+            cancelFade();
+            localFade = 0f;
+            localPlayer.setMasterGain(0f);
+            MultiRoomAudioPlayer localOut = getMultiRoomAudioPlayer();
+            localOut.setBalance(prefs.getBalance());
+            localOut.resetForStream();
+            localOut.start();
+            multiRoomStreamer = new MultiRoomStreamer(this, track.uri, m,
+                    startPos, () -> (long) localPlayer.getPosition(), startWall);
+            final long fStartPos = startPos;
+            final long fStartWall = startWall;
+            multiRoomStreamer.setLocalSink(new MultiRoomStreamer.Sink() {
+                @Override
+                public void onFormat(int sampleRate, int channels) {
+                    MultiRoomAudioPlayer p = getMultiRoomAudioPlayer();
+                    p.setFormat(sampleRate, channels);
+                    // anchorLocalWall = the wall time at which the stream
+                    // position was fStartPos (= startWall + fStartPos).
+                    p.setLocalTimeline(fStartPos, fStartWall + fStartPos, 0);
+                }
+
+                @Override
+                public void onChunk(byte[] pcm, long posMs) {
+                    getMultiRoomAudioPlayer().onChunk(pcm, posMs);
+                }
+            });
+            multiRoomStreamer.start();
+            main.removeCallbacks(multiRoomClockTicker);
+            main.post(multiRoomClockTicker);
+        } else {
+            // Stream already running: make sure a volume fade didn't bring the
+            // ExoPlayer back (it must stay silent while the stream is the
+            // audible output), otherwise both would play at once.
+            cancelFade();
+            localFade = 0f;
+            localPlayer.setMasterGain(0f);
+        }
+    }
+
+    /** Restarts the streamer once after a seek, from the settled position. */
+    private final Runnable multiRoomRestartRunnable = new Runnable() {
+        @Override
+        public void run() {
+            suppressStreamerSync = false;
+            state.positionMs = (int) localPlayer.getPosition();
+            stopMultiRoomStreamer();
+            syncMultiRoomStreamer();
+        }
+    };
+
+    private void stopMultiRoomStreamer() {
+        main.removeCallbacks(multiRoomClockTicker);
+        if (multiRoomStreamer != null) {
+            multiRoomStreamer.stop();
+            multiRoomStreamer = null;
+        }
+        MultiRoomAudioPlayer p = multiRoomAudioPlayer;
+        if (p != null && p.isRunning()) {
+            p.stop();
+        }
+        // Hand the audible output back to the ExoPlayer when local music is
+        // still playing (e.g. all receivers were deselected).
+        if (state.source == PlayerUiState.Source.LOCAL && localPlayer.isPlaying()
+                && localFade < 1f) {
+            fadeLocalIn();
+        }
+    }
+
+    /** Sends clock samples + time-sync requests at 500 ms while streaming. */
+    private final Runnable multiRoomClockTicker = new Runnable() {
+        @Override
+        public void run() {
+            MultiRoomManager m = multiRoomManager;
+            if (m != null && m.hasTargets() && multiRoomStreamer != null
+                    && state.source == PlayerUiState.Source.LOCAL && state.playing) {
+                long masterLatency = 0;
+                if (multiRoomAudioPlayer != null) {
+                    masterLatency = multiRoomAudioPlayer.getOutputLatencyMs();
+                }
+                m.sendClock(multiRoomStreamer.getStreamPositionMs(), masterLatency);
+                m.sendTsRequests();
+                main.postDelayed(this, 500);
+            }
+        }
+    };
+
+    /**
+     * Three seconds after a track switch / play command, force a quick NTP
+     * round so receivers re-anchor to the new stream immediately.
+     */
+    private final Runnable multiRoomCalibration = new Runnable() {
+        @Override
+        public void run() {
+            MultiRoomManager m = multiRoomManager;
+            if (m != null && m.hasTargets()) {
+                Log.i(TAG, "post-switch latency calibration");
+                m.forceTimeSync();
+            }
+        }
+    };
+
+    private void scheduleMultiRoomCalibration() {
+        main.removeCallbacks(multiRoomCalibration);
+        main.postDelayed(multiRoomCalibration, 3000);
+    }
+
+    private MultiRoomAudioPlayer getMultiRoomAudioPlayer() {
+        if (multiRoomAudioPlayer == null) {
+            multiRoomAudioPlayer = new MultiRoomAudioPlayer();
+            multiRoomAudioPlayer.setBalance(prefs.getBalance());
+            // Keep the master's queue healthy (150 ms) and let the receiver
+            // pull ahead by 80 ms via the broadcast compensation below.
+            multiRoomAudioPlayer.setLatencyCompensationMs(150);
+        }
+        return multiRoomAudioPlayer;
+    }
+
+    private final MultiRoomManager.Events multiRoomEvents = new MultiRoomManager.Events() {
+        @Override
+        public void onRemoteMeta(String title, String artist, String album, long durationMs) {
+            main.post(() -> {
+                enterMultiRoomRemoteMode();
+                state.source = PlayerUiState.Source.REMOTE;
+                if (title != null && title.length() > 0) {
+                    state.title = title;
+                    multiRoomMetaTitle = title;
+                }
+                if (artist != null && artist.length() > 0) {
+                    state.artist = artist;
+                    multiRoomMetaArtist = artist;
+                }
+                if (album != null && album.length() > 0) {
+                    state.album = album;
+                    multiRoomMetaAlbum = album;
+                }
+                if (durationMs > 0) {
+                    state.durationMs = (int) durationMs;
+                    multiRoomMetaDurationMs = durationMs;
+                }
+                publish();
+            });
+        }
+
+        @Override
+        public void onRemoteArt(byte[] imageData) {
+            main.post(() -> {
+                try {
+                    Bitmap art = BitmapFactory.decodeByteArray(imageData, 0, imageData.length);
+                    if (art != null) {
+                        state.art = art;
+                        multiRoomMetaArt = art;
+                        publish();
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "remote art decode failed", t);
+                }
+            });
+        }
+
+        @Override
+        public void onRemotePlay(int positionMs) {
+            main.post(() -> {
+                enterMultiRoomRemoteMode();
+                state.source = PlayerUiState.Source.REMOTE;
+                state.playing = true;
+                state.positionMs = positionMs;
+                MultiRoomAudioPlayer p = getMultiRoomAudioPlayer();
+                p.setBalance(prefs.getBalance());
+                if (p.isRunning()) {
+                    p.resume();
+                } else {
+                    p.start();
+                }
+                p.setOutputGain(0f);
+                fadeMultiRoomIn();
+                publish();
+            });
+        }
+
+        @Override
+        public void onRemotePause() {
+            main.post(() -> {
+                if (state.source == PlayerUiState.Source.REMOTE) {
+                    state.playing = false;
+                    getMultiRoomAudioPlayer().pause();
+                    publish();
+                }
+            });
+        }
+
+        @Override
+        public void onRemoteStop() {
+            main.post(() -> {
+                if (state.source == PlayerUiState.Source.REMOTE) {
+                    exitMultiRoomRemoteMode();
+                    publish();
+                }
+            });
+        }
+
+        @Override
+        public void onRemoteFlush() {
+            main.post(() -> {
+                if (multiRoomAudioPlayer != null) {
+                    multiRoomAudioPlayer.flush();
+                }
+            });
+        }
+
+        @Override
+        public void onRemoteFormat(int sampleRate, int channels) {
+            main.post(() -> {
+                MultiRoomAudioPlayer p = getMultiRoomAudioPlayer();
+                p.setBalance(prefs.getBalance());
+                p.setFormat(sampleRate, channels);
+            });
+        }
+
+        @Override
+        public void onRemoteClock(long masterPosMs, long masterWallMs, long offsetMs, long masterLatencyMs) {
+            main.post(() -> {
+                getMultiRoomAudioPlayer().updateClock(
+                        masterPosMs, masterWallMs, offsetMs, masterLatencyMs);
+                if (state.source == PlayerUiState.Source.REMOTE && state.playing) {
+                    long anchorLocalWall = masterWallMs - offsetMs;
+                    long nowPos = masterPosMs + (System.currentTimeMillis() - anchorLocalWall);
+                    if (nowPos >= 0) state.positionMs = (int) nowPos;
+                    publish();
+                }
+            });
+        }
+
+        @Override
+        public void onRemoteAudio(byte[] pcm, long posMs) {
+            getMultiRoomAudioPlayer().onChunk(pcm, posMs);
+        }
+
+        @Override
+        public void onRemoteLatencyComp(int ms) {
+            main.post(() -> {
+                if (multiRoomAudioPlayer != null) {
+                    multiRoomAudioPlayer.setLatencyCompensationMs(ms);
+                }
+            });
+        }
+
+        @Override
+        public void onRemoteControl(String action, int positionMs) {
+            main.post(() -> {
+                Log.i(TAG, "remote control: " + action + " pos=" + positionMs);
+                switch (action) {
+                    case "play":
+                        if (state.source == PlayerUiState.Source.LOCAL && !state.playing) {
+                            togglePlay();
+                        }
+                        break;
+                    case "pause":
+                        if (state.source == PlayerUiState.Source.LOCAL && state.playing) {
+                            togglePlay();
+                        }
+                        break;
+                    case "toggle":
+                        togglePlay();
+                        break;
+                    case "next":
+                        next();
+                        break;
+                    case "prev":
+                        previous();
+                        break;
+                    case "seek":
+                        seekTo(positionMs);
+                        break;
+                    default:
+                        break;
+                }
+            });
+        }
+
+        @Override
+        public void onRemoteDisconnect() {
+            main.post(() -> {
+                if (state.source != PlayerUiState.Source.REMOTE) {
+                    // AirPlay may be occupying the UI; the multi-room session
+                    // is gone, so don't try to restore it later.
+                    resumeMultiRoomAfterAirPlay = false;
+                    return;
+                }
+                Log.i(TAG, "multi-room master disconnected, exiting remote mode");
+                exitMultiRoomRemoteMode();
+                state.statusText = "";
+                publish();
+            });
+        }
+
+        @Override
+        public void onTargetsChanged(int count) {
+            main.post(() -> {
+                state.statusText = count > 0 ? "多房间播放中 (" + count + " 台)" : "";
+                if (count > 0) {
+                    // A receiver just connected while playback was already
+                    // running: push the current track + state immediately.
+                    pushMultiRoomState();
+                    // Receiver-side correction: pull the tablet ~80 ms ahead
+                    // (it was audibly late with master-only compensation).
+                    multiRoomManager.sendLatencyComp(-80);
+                } else {
+                    // All receivers gone: hand the audio back to ExoPlayer.
+                    syncMultiRoomStreamer();
+                }
+                publish();
+            });
         }
     };
 
@@ -296,6 +850,9 @@ public class PlaybackService extends Service {
         airPlayController = new AirPlayController(this, airPlayEvents);
         airPlayController.start(prefs.getAirPlayName());
 
+        multiRoomManager = new MultiRoomManager();
+        multiRoomManager.start(prefs.getAirPlayName(), multiRoomEvents);
+
         localPlayer = new LocalPlayer(this, localListener);
         localPlayer.setMode(state.mode);
         float balance = prefs.getBalance();
@@ -373,6 +930,15 @@ public class PlaybackService extends Service {
         if (ticker != null) main.removeCallbacks(ticker);
         cancelFade();
         cancelAirFade();
+        if (multiRoomManager != null) {
+            multiRoomManager.stop();
+            multiRoomManager = null;
+        }
+        stopMultiRoomStreamer();
+        if (multiRoomAudioPlayer != null) {
+            multiRoomAudioPlayer.stop();
+            multiRoomAudioPlayer = null;
+        }
         if (airPlayController != null) airPlayController.stop();
         main.removeCallbacks(airPlayStatusPoller);
         if (dacpClient != null) {
@@ -417,6 +983,7 @@ public class PlaybackService extends Service {
         localPlayer.play();
         fadeLocalIn();
         loadMetadata(localPlayer.getCurrentTrack());
+        scheduleMultiRoomCalibration();
     }
 
     public void playTrackByUri(String uri) {
@@ -429,6 +996,11 @@ public class PlaybackService extends Service {
     }
 
     public void togglePlay() {
+        if (state.source == PlayerUiState.Source.REMOTE && multiRoomManager != null) {
+            // Receiver UI: forward the transport command to the master.
+            multiRoomManager.sendControlToMaster("toggle", 0);
+            return;
+        }
         if (state.source == PlayerUiState.Source.AIRPLAY) {
             if (state.playing) {
                 pauseAirPlay();
@@ -457,7 +1029,26 @@ public class PlaybackService extends Service {
         }
     }
 
+    /**
+     * Receiver-side disconnect: fade the multi-room audio out first, then ask
+     * the master to drop us so the stream stays alive during the fade.
+     */
+    public void disconnectFromMaster() {
+        if (state.source != PlayerUiState.Source.REMOTE) return;
+        Log.i(TAG, "receiver disconnect requested; fading out then disconnecting");
+        fadeMultiRoomOut(() -> {
+            if (multiRoomAudioPlayer != null) multiRoomAudioPlayer.stop();
+            if (multiRoomManager != null) {
+                multiRoomManager.sendControlToMaster("disconnectMe", 0);
+            }
+        });
+    }
+
     public void pausePlayback() {
+        if (state.source == PlayerUiState.Source.REMOTE && multiRoomManager != null) {
+            multiRoomManager.sendControlToMaster("pause", 0);
+            return;
+        }
         if (state.source == PlayerUiState.Source.LOCAL) {
             if (state.playing) {
                 state.playing = false;
@@ -470,6 +1061,10 @@ public class PlaybackService extends Service {
     }
 
     public void next() {
+        if (state.source == PlayerUiState.Source.REMOTE && multiRoomManager != null) {
+            multiRoomManager.sendControlToMaster("next", 0);
+            return;
+        }
         if (state.source == PlayerUiState.Source.LOCAL) {
             localPlayer.next();
         } else if (state.source == PlayerUiState.Source.AIRPLAY) {
@@ -478,6 +1073,10 @@ public class PlaybackService extends Service {
     }
 
     public void previous() {
+        if (state.source == PlayerUiState.Source.REMOTE && multiRoomManager != null) {
+            multiRoomManager.sendControlToMaster("prev", 0);
+            return;
+        }
         if (state.source == PlayerUiState.Source.LOCAL) {
             localPlayer.previous();
         } else if (state.source == PlayerUiState.Source.AIRPLAY) {
@@ -503,8 +1102,20 @@ public class PlaybackService extends Service {
     }
 
     public void seekTo(int positionMs) {
+        if (state.source == PlayerUiState.Source.REMOTE && multiRoomManager != null) {
+            multiRoomManager.sendControlToMaster("seek", positionMs);
+            return;
+        }
         if (state.source == PlayerUiState.Source.LOCAL) {
             localPlayer.seekTo(positionMs);
+            if (multiRoomManager != null && multiRoomManager.hasTargets()) {
+                // Receivers must drop buffered audio and follow the new
+                // position; the streamer restarts from the new location.
+                multiRoomManager.sendFlush();
+                suppressStreamerSync = true;
+                main.removeCallbacks(multiRoomRestartRunnable);
+                main.postDelayed(multiRoomRestartRunnable, 300);
+            }
         }
     }
 
@@ -546,11 +1157,42 @@ public class PlaybackService extends Service {
         return airPlayController.getStatusText();
     }
 
+    /** Multi-room sync manager (discovery + master/receiver roles). */
+    public MultiRoomManager getMultiRoomManager() {
+        return multiRoomManager;
+    }
+
     // ------------------------------------------------------------------
     // AirPlay session handling (source switching rules)
     // ------------------------------------------------------------------
 
     private void handleAirPlayStart(String clientName, String dacpId, String activeRemote, String remoteIp, boolean newSession) {
+        if (state.source == PlayerUiState.Source.REMOTE) {
+            // Multi-room audio is playing on this receiver: fade it out over
+            // 2500 ms, then AirPlay takes over; remember to restore it when
+            // the AirPlay session ends.
+            if (!newSession) return; // state polls must not steal the UI
+            Log.i(TAG, "AirPlay arrived during multi-room: fading multi-room out");
+            airPlaySessionActive = true; // accept early metadata during the fade
+            resumeMultiRoomAfterAirPlay = true;
+            resumeLocalAfterAirPlay = false;
+            fadeMultiRoomOut(() -> {
+                if (multiRoomAudioPlayer != null) multiRoomAudioPlayer.stop();
+                completeAirPlayStart(clientName, dacpId, activeRemote, remoteIp, newSession, 2500);
+            });
+            return;
+        }
+        // Master (or idle/plain) path: receiving AirPlay while broadcasting
+        // multi-room drops every receiver.
+        if (multiRoomManager != null && multiRoomManager.hasTargets()) {
+            Log.i(TAG, "AirPlay received while broadcasting multi-room; disconnecting all receivers");
+            multiRoomManager.disconnectAllAndRemember();
+        }
+        completeAirPlayStart(clientName, dacpId, activeRemote, remoteIp, newSession, 2000);
+    }
+
+    private void completeAirPlayStart(String clientName, String dacpId, String activeRemote, String remoteIp,
+                                      boolean newSession, long fadeInMs) {
         DiagnosticLog.i(TAG, "AirPlay session start (new=" + newSession + ", client=" + clientName + ")");
         airPlaySessionActive = true;
         airPlayUserPaused = false;
@@ -586,8 +1228,13 @@ public class PlaybackService extends Service {
         state.art = null;
         state.positionMs = 0;
 		state.durationMs = 0;
+        if (airMetaTitle.length() > 0) state.title = airMetaTitle;
+        if (airMetaArtist.length() > 0) state.artist = airMetaArtist;
+        if (airMetaAlbum.length() > 0) state.album = airMetaAlbum;
+        if (airMetaArt != null) state.art = airMetaArt;
+        if (airMetaDurationMs > 0) state.durationMs = (int) airMetaDurationMs;
         airPlayController.setVolumeGain(0f);
-        fadeAirPlayIn();
+        fadeAirPlayIn(fadeInMs);
 		publish();
 	}
 
@@ -597,11 +1244,17 @@ public class PlaybackService extends Service {
      * value; the session must be active for the info to be shown.
      */
     private void applyAirPlayTrackInfo(String title, String artist, String album, Bitmap art, long durationMs) {
-        if (state.source != PlayerUiState.Source.AIRPLAY) {
-            return;
-        }
+        if (!airPlaySessionActive) return;
         Log.i(TAG, "AirPlay metadata: title=" + title + " artist=" + artist + " album=" + album
                 + " art=" + (art != null) + " dur=" + durationMs);
+        // Always cache the metadata; the UI only shows it once AirPlay owns
+        // the screen (e.g. after the multi-room fade-out completes).
+        if (title != null && title.trim().length() > 0) airMetaTitle = title.trim();
+        if (artist != null && artist.trim().length() > 0) airMetaArtist = artist.trim();
+        if (album != null && album.trim().length() > 0) airMetaAlbum = album.trim();
+        if (art != null) airMetaArt = art;
+        if (durationMs > 0) airMetaDurationMs = durationMs;
+        if (state.source != PlayerUiState.Source.AIRPLAY) return;
         if (title != null && title.trim().length() > 0) state.title = title.trim();
         if (artist != null && artist.trim().length() > 0) state.artist = artist.trim();
         if (album != null && album.trim().length() > 0) state.album = album.trim();
@@ -611,6 +1264,7 @@ public class PlaybackService extends Service {
     }
 
     private void handleAirPlayPause() {
+        if (state.source == PlayerUiState.Source.REMOTE) return; // multi-room owns the UI
         cancelAirFade();
         DiagnosticLog.i(TAG, "AirPlay session pause (userPaused=" + airPlayUserPaused
                 + ", resumeLocal=" + resumeLocalAfterAirPlay + ")");
@@ -652,6 +1306,54 @@ public class PlaybackService extends Service {
 	}
 
 	private void handleAirPlayStop() {
+		if (resumeMultiRoomAfterAirPlay) {
+			// AirPlay interrupted multi-room: fade AirPlay out over 2500 ms,
+			// then resume the multi-room stream with a 2500 ms fade-in.
+			Log.i(TAG, "AirPlay ended; fading out and resuming multi-room");
+			resumeMultiRoomAfterAirPlay = false;
+			airPlaySessionActive = false;
+			airPlayUserPaused = false;
+			airPlayWatchdogPaused = false;
+			main.removeCallbacks(airPlayStatusPoller);
+			if (dacpClient != null) {
+				dacpClient.release();
+				dacpClient = null;
+			}
+			fadeAirPlayOut(() -> {
+				airPlayController.pauseReceiverOutput();
+				// Restore the multi-room metadata that was shown before AirPlay.
+				state.title = multiRoomMetaTitle.length() > 0
+						? multiRoomMetaTitle : "多房间播放";
+				state.artist = multiRoomMetaArtist;
+				state.album = multiRoomMetaAlbum;
+				state.art = multiRoomMetaArt;
+				if (multiRoomMetaDurationMs > 0) {
+					state.durationMs = (int) multiRoomMetaDurationMs;
+				}
+				MultiRoomAudioPlayer p = getMultiRoomAudioPlayer();
+				p.setBalance(prefs.getBalance());
+				p.setOutputGain(0f);
+				p.start();
+				state.source = PlayerUiState.Source.REMOTE;
+				state.playing = true;
+				publish();
+				fadeMultiRoomIn();
+			});
+			return;
+		}
+		if (state.source == PlayerUiState.Source.REMOTE) {
+			// Keep the multi-room UI; just drop the dead AirPlay session so it
+			// is not restored later.
+			airPlaySessionActive = false;
+			airPlayUserPaused = false;
+			airPlayWatchdogPaused = false;
+			main.removeCallbacks(airPlayStatusPoller);
+			if (dacpClient != null) {
+				dacpClient.release();
+				dacpClient = null;
+			}
+			return;
+		}
 		cancelAirFade();
 		DiagnosticLog.i(TAG, "AirPlay session stop (resumeLocal=" + resumeLocalAfterAirPlay + ")");
 		airPlaySessionActive = false;
@@ -681,6 +1383,11 @@ public class PlaybackService extends Service {
         }
 		resumeLocalAfterAirPlay = false;
         airPlayController.setVolumeGain(1f);
+        // After an AirPlay interruption on the master, rejoin the receivers
+        // that were dropped; offline ones are skipped by the connect attempt.
+        if (multiRoomManager != null) {
+            multiRoomManager.reconnectRemembered();
+        }
 		publish();
 	}
 
@@ -716,9 +1423,21 @@ public class PlaybackService extends Service {
 
 	/** Fades the local player volume up to full (2000 ms). */
 	private void fadeLocalIn() {
+		fadeLocalIn(2000);
+	}
+
+	/** Fades the local player volume up to full over {@code durationMs}. */
+	private void fadeLocalIn(long durationMs) {
+		if (multiRoomStreamer != null) {
+			// Multi-room stream owns the master's output; never unmute the
+			// ExoPlayer while it is active (would cause double audio).
+			cancelFade();
+			localFade = 0f;
+			localPlayer.setMasterGain(0f);
+			return;
+		}
 		cancelFade();
 		localFade = 0f;
-		final long durationMs = 2000;
 		final long stepMs = 25;
 		final int steps = (int) (durationMs / stepMs);
 		final float[] stepCount = {0};
@@ -742,8 +1461,12 @@ public class PlaybackService extends Service {
 
 	/** Fades the AirPlay receiver output gain from zero up to full (2000 ms). */
 	private void fadeAirPlayIn() {
+		fadeAirPlayIn(2000);
+	}
+
+	/** Fades the AirPlay receiver output gain from zero up to full. */
+	private void fadeAirPlayIn(long durationMs) {
 		cancelAirFade();
-		final long durationMs = 2000;
 		final long stepMs = 25;
 		final int steps = (int) (durationMs / stepMs);
 		final float[] stepCount = {0};
@@ -899,6 +1622,16 @@ public class PlaybackService extends Service {
             final String fArtist = artist;
             final String fAlbum = album;
             final long fDuration = duration;
+            final byte[] fArtBytes = artBytes;
+            lastArtBytes = artBytes;
+
+            // Push metadata to multi-room receivers (master role).
+            if (multiRoomManager != null && multiRoomManager.hasTargets()) {
+                multiRoomManager.sendMeta(fTitle, fArtist, fAlbum, fDuration);
+                if (fArtBytes != null && fArtBytes.length > 0) {
+                    multiRoomManager.sendArt(fArtBytes);
+                }
+            }
 
             main.post(() -> {
                 // A pending metadata read for a local track must never
@@ -940,7 +1673,9 @@ public class PlaybackService extends Service {
         state.source = PlayerUiState.Source.LOCAL;
         localPlayer.setMasterGain(0f);
         localPlayer.setPlaylist(tracks, index);
-        localPlayer.seekTo(prefs.getLastTrackPosition());
+        int lastPos = prefs.getLastTrackPosition();
+        localPlayer.seekTo(lastPos);
+        state.positionMs = lastPos;
         if (autoplay) {
             localPlayer.play();
             fadeLocalIn();

@@ -23,3 +23,15 @@ bt_a2dp_*/
 bt_sink_discover/
 bt_source_helper/
 bt_unpair_helper/
+.backup_stage/
+backups/
+airplay2_ref/
+shairport2_ref/
+libavcodec/
+libavdevice/
+libavfilter/
+libavformat/
+libavutil/
+doc/
+c11test.obj
+nul

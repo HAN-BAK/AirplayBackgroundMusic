@@ -1,6 +1,8 @@
 package com.airmusic.player;
 
 import android.Manifest;
+import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.ContentObserver;
@@ -24,11 +26,15 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
+import com.airmusic.player.multicast.MultiRoomDiscovery;
+import com.airmusic.player.multicast.MultiRoomManager;
 import com.airmusic.player.service.PlaybackService;
 import com.airmusic.player.util.PlayerUiState;
 import com.airmusic.player.util.Prefs;
 import com.airmusic.player.util.StateBus;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
@@ -41,6 +47,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView positionText;
     private TextView durationText;
     private ImageButton btnPlay;
+    private ImageButton btnMulticast;
     private SeekBar seekBar;
     private SeekBar volumeSeek;
     private View seekRow;
@@ -82,6 +89,7 @@ public class MainActivity extends AppCompatActivity {
         positionText = findViewById(R.id.position_text);
         durationText = findViewById(R.id.duration_text);
         btnPlay = findViewById(R.id.btn_play);
+        btnMulticast = findViewById(R.id.btn_multicast);
         seekBar = findViewById(R.id.seek_bar);
         volumeSeek = findViewById(R.id.volume_seek);
         seekRow = findViewById(R.id.seek_row);
@@ -111,6 +119,15 @@ public class MainActivity extends AppCompatActivity {
                 startActivity(new Intent(this, LibraryActivity.class)));
         findViewById(R.id.btn_apps).setOnClickListener(v ->
                 startActivity(new Intent(this, AppsActivity.class)));
+        findViewById(R.id.btn_multicast).setOnClickListener(v -> {
+            if (lastState != null && lastState.source == PlayerUiState.Source.REMOTE) {
+                // Receiver UI: ask the master to disconnect this device.
+                PlaybackService service = PlaybackService.getInstance();
+                if (service != null) service.disconnectFromMaster();
+            } else {
+                openMultiRoomDialog();
+            }
+        });
         findViewById(R.id.btn_prev).setOnClickListener(v -> {
             PlaybackService service = PlaybackService.getInstance();
             if (service != null) service.previous();
@@ -246,13 +263,70 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void openMultiRoomDialog() {
+        PlaybackService service = PlaybackService.getInstance();
+        if (service == null) return;
+        MultiRoomManager mgr = service.getMultiRoomManager();
+        if (mgr == null) return;
+        // Show a spinner while the network scan runs so the delay doesn't
+        // feel like a freeze.
+        ProgressDialog progress = new ProgressDialog(this);
+        progress.setMessage(getString(R.string.multicast_scanning));
+        progress.setCancelable(true);
+        progress.show();
+        final Handler scanHandler = new Handler(Looper.getMainLooper());
+        final Runnable showDialog = () -> {
+            if (progress.isShowing()) progress.dismiss();
+            showMultiRoomDialog(mgr);
+        };
+        progress.setOnCancelListener(d -> scanHandler.removeCallbacks(showDialog));
+        mgr.rescanDevices();
+        scanHandler.postDelayed(showDialog, 2500);
+    }
+
+    private void showMultiRoomDialog(MultiRoomManager mgr) {
+        List<MultiRoomDiscovery.DeviceInfo> devices = new ArrayList<>();
+        for (MultiRoomDiscovery.DeviceInfo d : mgr.getDevices()) {
+            devices.add(d);
+        }
+        if (devices.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.multicast_title)
+                    .setMessage(R.string.multicast_empty)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        String[] names = new String[devices.size()];
+        for (int i = 0; i < devices.size(); i++) names[i] = devices.get(i).name;
+        boolean[] checked = new boolean[devices.size()];
+        List<MultiRoomDiscovery.DeviceInfo> selected = new ArrayList<>();
+        // Remember which receivers are already connected so the checkboxes
+        // keep their state between dialog opens.
+        for (int i = 0; i < devices.size(); i++) {
+            if (mgr.isTargetConnected(devices.get(i).name)) {
+                checked[i] = true;
+                selected.add(devices.get(i));
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.multicast_title)
+                .setMultiChoiceItems(names, checked, (d, which, isChecked) -> {
+                    if (isChecked) selected.add(devices.get(which));
+                    else selected.remove(devices.get(which));
+                })
+                .setPositiveButton(R.string.multicast_confirm, (d, w) -> mgr.updateTargets(selected))
+                .setNegativeButton(R.string.multicast_cancel, null)
+                .show();
+    }
+
     private void render(PlayerUiState s) {
         trackTitle.setText(s.title);
         trackArtist.setText(s.artist);
         trackAlbum.setText(s.album);
 
         Bitmap art = s.art;
-        if (s.source == PlayerUiState.Source.AIRPLAY) {
+        if (s.source == PlayerUiState.Source.AIRPLAY || s.source == PlayerUiState.Source.REMOTE) {
             if (art != null) {
                 albumArt.setImageBitmap(art);
             } else {
@@ -269,6 +343,8 @@ public class MainActivity extends AppCompatActivity {
 
         if (s.source == PlayerUiState.Source.AIRPLAY) {
             sourceBadge.setText(getString(R.string.source_airplay) + " · " + s.clientName);
+        } else if (s.source == PlayerUiState.Source.REMOTE) {
+            sourceBadge.setText(R.string.source_remote);
         } else if (s.source == PlayerUiState.Source.LOCAL) {
             sourceBadge.setText(R.string.source_local);
         } else {
@@ -278,7 +354,21 @@ public class MainActivity extends AppCompatActivity {
         btnPlay.setImageResource(s.playing ? R.drawable.ic_pause : R.drawable.ic_play);
         btnPlay.setContentDescription(getString(s.playing ? R.string.pause : R.string.play));
 
-        boolean showSeek = s.source == PlayerUiState.Source.LOCAL && s.durationMs > 0;
+        if (s.source == PlayerUiState.Source.AIRPLAY) {
+            // Multi-room is meaningless while receiving AirPlay.
+            btnMulticast.setVisibility(View.GONE);
+        } else if (s.source == PlayerUiState.Source.REMOTE) {
+            btnMulticast.setVisibility(View.VISIBLE);
+            btnMulticast.setImageResource(R.drawable.ic_disconnect);
+            btnMulticast.setContentDescription(getString(R.string.multicast_disconnect));
+        } else {
+            btnMulticast.setVisibility(View.VISIBLE);
+            btnMulticast.setImageResource(R.drawable.ic_multicast);
+            btnMulticast.setContentDescription(getString(R.string.multicast));
+        }
+
+        boolean showSeek = (s.source == PlayerUiState.Source.LOCAL
+                || s.source == PlayerUiState.Source.REMOTE) && s.durationMs > 0;
         seekRow.setVisibility(showSeek ? View.VISIBLE : View.GONE);
         if (showSeek) {
             if (!seeking) {

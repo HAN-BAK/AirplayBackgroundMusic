@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">AirPlay 背景音乐</string>
+    <string name="app_name">BukaMusic</string>
     <string name="bottom_bar_title">AirPlay</string>
     <string name="now_playing">正在播放</string>
     <string name="unknown_title">未知歌曲</string>
@@ -31,7 +31,7 @@
     <string name="mode_shuffle">随机循环播放</string>
     <string name="mode_folder_loop">顺序循环播放</string>
     <string name="settings_title">设置</string>
-    <string name="pref_airplay_name">AirPlay 设备名</string>
+    <string name="pref_airplay_name">设备名称</string>
     <string name="pref_airplay_name_hint">在 iPhone/其他设备上显示的名称</string>
     <string name="pref_music_path">本地音乐路径</string>
     <string name="pref_music_path_hint">未选择时使用系统媒体库（含 USB 设备）</string>
@@ -62,6 +62,14 @@
     <string name="balance_right">右</string>
     <string name="apps">应用</string>
     <string name="apps_title">应用</string>
+    <string name="multicast">多房间</string>
+    <string name="multicast_title">多房间同步播放</string>
+    <string name="multicast_empty">未发现其他设备</string>
+    <string name="multicast_scanning">正在搜索设备…</string>
+    <string name="multicast_disconnect">断开连接</string>
+    <string name="multicast_confirm">确认</string>
+    <string name="multicast_cancel">取消</string>
+    <string name="source_remote">多房间播放</string>
     <string name="open_app_to_continue">打开应用以继续</string>
     <string name="app_running_hint">AirPlay 接收与后台播放已启动</string>
     <string name="boot_toast">AirPlay 背景音乐已在开机后自动启动</string>
