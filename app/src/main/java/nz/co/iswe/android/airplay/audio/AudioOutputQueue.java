@@ -24,6 +24,11 @@ import java.util.logging.Logger;
 
 import org.phlo.AirReceiver.AudioClock;
 
+import com.airmusic.player.playback.FirEqualizer;
+
+import java.io.File;
+import java.io.FileOutputStream;
+
 import android.media.AudioManager;
 import android.media.AudioTrack;
 
@@ -37,7 +42,10 @@ public class AudioOutputQueue implements AudioClock {
 	private static Logger LOG = Logger.getLogger(AudioOutputQueue.class.getName());
 
 	private static final double QUEUE_LENGHT_MAX_SECONDS 	= 10;
-	private static final double BUFFER_SIZE_SECONDS 		= 0.05;
+	/* The 50 ms buffer in the original AirReceiver underruns on Wi-Fi jitter
+	 * or decode hiccups and produces audible stutter. 500 ms gives the queue
+	 * room to smooth over network/decode variations. */
+	private static final double BUFFER_SIZE_SECONDS 		= 0.5;
 	private static final double TIMING_PRECISION 			= 0.001;
 	
 	/**
@@ -134,6 +142,9 @@ public class AudioOutputQueue implements AudioClock {
 	 * Requested volume
 	 */
 	private float requestedVolume = 1.0f;
+
+	/** Last volume (dB) sent by the sender; echoed back via GET_PARAMETER. */
+	private float lastVolumeDb = 0.0f;
 	
 	/**
 	 * Current volume
@@ -147,6 +158,31 @@ public class AudioOutputQueue implements AudioClock {
 
 	/** Extra output gain in [0, 1], used for smooth volume transitions. */
 	private volatile float outputGain = 1.0f;
+
+	/** App-wide equalizer applied before writing to the AudioTrack. */
+	private volatile FirEqualizer firEqualizer;
+
+	/** Debug hook: raw post-EQ 16-bit PCM capture of the AirPlay output. */
+	private static FileOutputStream captureStream;
+
+	public static synchronized void startCapture(File file) {
+		stopCapture();
+		try {
+			captureStream = new FileOutputStream(file);
+		} catch (Exception ignored) {
+		}
+	}
+
+	public static synchronized void stopCapture() {
+		if (captureStream != null) {
+			try {
+				captureStream.flush();
+				captureStream.close();
+			} catch (Exception ignored) {
+			}
+			captureStream = null;
+		}
+	}
 	
 	public AudioOutputQueue(final AudioStreamInformationProvider streamInfoProvider) {
 		//final AudioFormat audioFormat = streamInfoProvider.getAudioFormat();
@@ -289,7 +325,7 @@ public class AudioOutputQueue implements AudioClock {
 
 							/* Unmute line in case it was muted previously */
 							if (lineMuted) {
-								LOG.info("Audio data available, un-muting line");
+								LOG.fine("Audio data available, un-muting line");
 
 								lineMuted = false;
 								applyVolume();
@@ -403,7 +439,7 @@ public class AudioOutputQueue implements AudioClock {
 		}
 
 		private void appendSilence(final int frames) {
-			LOG.info("Appending Silence to the AudioTrack. frames: " + frames);
+			LOG.fine("Appending Silence to the AudioTrack. frames: " + frames);
 			
 			final byte[] silenceFrames = new byte[frames * bytesPerFrame];
 			for(int i = 0; i < silenceFrames.length; ++i){
@@ -454,6 +490,28 @@ public class AudioOutputQueue implements AudioClock {
 				samplesConverted[i + 1] = b;
 			}
 
+			final FirEqualizer eq = firEqualizer;
+			if (eq != null) {
+				/* The shared equalizer is also used by local playback, so its
+				 * kernel may have been built for a different sample rate.
+				 * Re-assert the AirPlay stream rate so filtering is correct
+				 * (setSampleRate only rebuilds when the rate actually changed). */
+				eq.setSampleRate(sampleRateInHz);
+				eq.process(samplesConverted,
+						channelConfig == android.media.AudioFormat.CHANNEL_OUT_STEREO ? 2 : 1);
+			}
+			FileOutputStream out;
+			synchronized (AudioOutputQueue.class) {
+				out = captureStream;
+			}
+			if (out != null) {
+				try {
+					out.write(samplesConverted, 0, samplesConverted.length);
+				} catch (Exception ignored) {
+					stopCapture();
+				}
+			}
+
 			/* Write samples to line */
 			//final int bytesWritten = m_line.write(samplesConverted, 0, samplesConverted.length);
 			final int bytesWritten = audioTrack.write(samplesConverted, 0, samplesConverted.length);
@@ -470,7 +528,7 @@ public class AudioOutputQueue implements AudioClock {
 				LOG.warning("Audio output line accepted only " + bytesWritten + " bytes of sample data while trying to write " + samples.length + " bytes");
 			}
 			else{
-				LOG.info(bytesWritten + " bytes written to the audio output line");
+				LOG.fine(bytesWritten + " bytes written to the audio output line");
 			}
 			
 			/* Update state */
@@ -510,7 +568,7 @@ public class AudioOutputQueue implements AudioClock {
 		leftVolume = clampVolume(leftVolume);
 		rightVolume = clampVolume(rightVolume);
 
-		LOG.info("setStereoVolume() leftVolume: " + leftVolume + " rightVolume: " + rightVolume);
+		LOG.fine("setStereoVolume() leftVolume: " + leftVolume + " rightVolume: " + rightVolume);
 
 		audioTrack.setStereoVolume(leftVolume, rightVolume);
 	}
@@ -558,6 +616,13 @@ public class AudioOutputQueue implements AudioClock {
 		}
 	}
 
+	public void setFirEqualizer(final FirEqualizer equalizer) {
+		this.firEqualizer = equalizer;
+		if (equalizer != null) {
+			equalizer.setSampleRate(sampleRateInHz);
+		}
+	}
+
 	/**
 	 * Returns the line's MASTER_GAIN control's value.
 	 */
@@ -579,6 +644,7 @@ public class AudioOutputQueue implements AudioClock {
 		// AirPlay sounds exactly like local playback (both are controlled by
 		// the device volume only). The sender's volume slider no longer
 		// attenuates the output; only a real mute (-144 dB) is honored.
+		lastVolumeDb = volume;
 		requestedVolume = volume <= -144.0f ? 0.0f : 1.0f;
 	}
 
@@ -588,7 +654,7 @@ public class AudioOutputQueue implements AudioClock {
 	 * @param gain desired gain
 	 */
 	public synchronized float getRequestedVolume() {
-		return requestedVolume;
+		return lastVolumeDb;
 	}
 
 	/**
@@ -619,7 +685,7 @@ public class AudioOutputQueue implements AudioClock {
 
 		latestSeenFrameTime = Math.max(latestSeenFrameTime, frameTime);
 		
-		LOG.info(" delay: " + delay );
+		LOG.fine(" delay: " + delay);
 		
 		if (delay < -packetSeconds) {
 			/* The whole packet is scheduled to be played in the past */
@@ -634,7 +700,7 @@ public class AudioOutputQueue implements AudioClock {
 			return false;
 		}
 
-		LOG.info("frames added to the frameQueue. frameTime: " + frameTime + " frames.length: " + frames.length + " frames: " + frames);
+		LOG.finest("frames added to the frameQueue. frameTime: " + frameTime + " frames.length: " + frames.length + " frames: " + frames);
 		
 		frameQueue.put(frameTime, frames);
 		return true;

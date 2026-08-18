@@ -53,19 +53,24 @@ public class LibraryActivity extends AppCompatActivity {
         List<Track> tracks = service != null
                 ? service.getTracks()
                 : MusicLibrary.getInstance().getCachedTracks();
-        if (tracks == null || tracks.isEmpty()) {
-            Toast.makeText(this, R.string.rescanning, Toast.LENGTH_SHORT).show();
-            MusicLibrary.getInstance().rescan(this, (result, error) -> {
-                if (result.isEmpty() && error != null) {
-                    Toast.makeText(this, error, Toast.LENGTH_LONG).show();
-                }
-                adapter.setTracks(result);
-                if (result.isEmpty()) {
-                    Toast.makeText(this, R.string.no_tracks, Toast.LENGTH_LONG).show();
-                }
-            });
-        } else {
+        if (tracks != null && !tracks.isEmpty()) {
             adapter.setTracks(tracks);
         }
+        // Always rescan so newly added files (USB, new downloads) show up;
+        // the cached list is shown immediately and replaced when ready.
+        MusicLibrary.getInstance().rescan(this, (result, error) -> {
+            if (service != null && result != null) {
+                service.setTracks(result);
+            }
+            if (result != null) {
+                adapter.setTracks(result);
+            }
+            if (result != null && result.isEmpty() && error != null) {
+                Toast.makeText(this, error, Toast.LENGTH_LONG).show();
+            }
+            if (result != null && result.isEmpty()) {
+                Toast.makeText(this, R.string.no_tracks, Toast.LENGTH_LONG).show();
+            }
+        });
     }
 }

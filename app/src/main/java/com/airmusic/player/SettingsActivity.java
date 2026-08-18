@@ -4,6 +4,9 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.View;
 import android.widget.RadioGroup;
 import android.widget.SeekBar;
 import android.widget.Switch;
@@ -30,22 +33,24 @@ public class SettingsActivity extends AppCompatActivity {
     private TextView pathDisplay;
     private RadioGroup radioMode;
     private Switch switchAutoPlay;
+    private Switch switchShowApps;
     private SeekBar seekBalance;
     private TextView airplayStatus;
-
-    private String pendingFolderPath;
-    private String pendingFolderDisplay;
+    private View btnEqualizer;
 
     private final ActivityResultLauncher<Intent> folderPicker =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
                     String path = result.getData().getStringExtra(FolderPickerActivity.EXTRA_RESULT_PATH);
                     if (path != null) {
-                        pendingFolderPath = path;
-                        pendingFolderDisplay = result.getData().getStringExtra(
+                        String display = result.getData().getStringExtra(
                                 FolderPickerActivity.EXTRA_RESULT_DISPLAY);
-                        if (pendingFolderDisplay == null) pendingFolderDisplay = path;
-                        pathDisplay.setText(formatFolderDisplay(pendingFolderDisplay, path));
+                        if (display == null) display = path;
+                        // Auto-save the folder and rescan immediately.
+                        prefs.setMusicFolderPath(path, display);
+                        pathDisplay.setText(formatFolderDisplay(display, path));
+                        PlaybackService svc = PlaybackService.getInstance();
+                        if (svc != null) svc.rescanLibrary();
                     }
                 }
             });
@@ -60,8 +65,10 @@ public class SettingsActivity extends AppCompatActivity {
         pathDisplay = findViewById(R.id.path_display);
         radioMode = findViewById(R.id.radio_mode);
         switchAutoPlay = findViewById(R.id.switch_auto_play);
+        switchShowApps = findViewById(R.id.switch_show_apps);
         seekBalance = findViewById(R.id.seek_balance);
         airplayStatus = findViewById(R.id.airplay_status);
+        btnEqualizer = findViewById(R.id.btn_equalizer);
 
         inputName.setText(prefs.getAirPlayName());
         String folderPath = prefs.getMusicFolderPath();
@@ -88,6 +95,55 @@ public class SettingsActivity extends AppCompatActivity {
                 break;
         }
         switchAutoPlay.setChecked(prefs.isAutoPlayOnStart());
+        switchAutoPlay.setOnCheckedChangeListener((b, checked) ->
+                prefs.setAutoPlayOnStart(checked));
+        switchShowApps.setChecked(prefs.isShowAppsButton());
+        switchShowApps.setOnCheckedChangeListener((b, checked) ->
+                prefs.setShowAppsButton(checked));
+
+        inputName.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                String name = s.toString().trim();
+                if (name.length() > 0) {
+                    prefs.setAirPlayName(name);
+                }
+            }
+        });
+        inputName.setOnFocusChangeListener((v, hasFocus) -> {
+            if (!hasFocus) {
+                PlaybackService service = PlaybackService.getInstance();
+                if (service != null) service.restartAirPlay();
+            }
+        });
+
+        radioMode.setOnCheckedChangeListener((group, checkedId) -> {
+            String mode;
+            if (checkedId == R.id.mode_repeat_one) {
+                mode = Prefs.PLAY_MODE_REPEAT_ONE;
+            } else if (checkedId == R.id.mode_shuffle) {
+                mode = Prefs.PLAY_MODE_SHUFFLE;
+            } else if (checkedId == R.id.mode_folder_loop) {
+                mode = Prefs.PLAY_MODE_FOLDER_LOOP;
+            } else {
+                mode = Prefs.PLAY_MODE_SEQUENCE;
+            }
+            prefs.setPlayMode(mode);
+            PlaybackService service = PlaybackService.getInstance();
+            if (service != null) service.applyPlayMode(mode);
+        });
+
+        setupSection(findViewById(R.id.section_airplay), findViewById(R.id.airplay_content));
+        setupSection(findViewById(R.id.section_local), findViewById(R.id.local_content));
+        setupSection(findViewById(R.id.section_system), findViewById(R.id.system_content));
         seekBalance.setProgress((int) ((prefs.getBalance() + 1f) * 100f));
         seekBalance.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -120,15 +176,13 @@ public class SettingsActivity extends AppCompatActivity {
                 folderPicker.launch(new Intent(this, FolderPickerActivity.class)));
         findViewById(R.id.btn_clear_path).setOnClickListener(v -> {
             prefs.clearMusicFolder();
-            pendingFolderPath = null;
-            pendingFolderDisplay = null;
             pathDisplay.setText(R.string.pref_music_path_hint);
+            PlaybackService service = PlaybackService.getInstance();
+            if (service != null) service.rescanLibrary();
             Toast.makeText(this, R.string.path_cleared, Toast.LENGTH_SHORT).show();
         });
 
-        findViewById(R.id.btn_save).setOnClickListener(v -> save());
         findViewById(R.id.btn_rescan).setOnClickListener(v -> {
-            save();
             PlaybackService service = PlaybackService.getInstance();
             if (service != null) service.rescanLibrary();
             Toast.makeText(this, R.string.rescanning, Toast.LENGTH_SHORT).show();
@@ -140,6 +194,15 @@ public class SettingsActivity extends AppCompatActivity {
                 Toast.makeText(this, R.string.home_settings_unavailable, Toast.LENGTH_SHORT).show();
             }
         });
+        findViewById(R.id.btn_wifi_settings).setOnClickListener(v -> {
+            try {
+                startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+            } catch (Exception e) {
+                Toast.makeText(this, R.string.home_settings_unavailable, Toast.LENGTH_SHORT).show();
+            }
+        });
+        findViewById(R.id.btn_equalizer).setOnClickListener(v ->
+                startActivity(new Intent(this, EqualizerActivity.class)));
         findViewById(R.id.btn_export_logs).setOnClickListener(v -> exportLogs());
     }
 
@@ -147,6 +210,22 @@ public class SettingsActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         refreshAirPlayStatus();
+        PlaybackService service = PlaybackService.getInstance();
+        boolean mrActive = service != null && service.isMultiRoomActive();
+        btnEqualizer.setEnabled(!mrActive);
+        btnEqualizer.setAlpha(mrActive ? 0.4f : 1f);
+    }
+
+    /** Makes a section header expand/collapse its content. */
+    private void setupSection(TextView title, View content) {
+        content.setVisibility(View.GONE);
+        title.setText("▸ " + title.getText());
+        title.setOnClickListener(v -> {
+            boolean visible = content.getVisibility() == View.VISIBLE;
+            content.setVisibility(visible ? View.GONE : View.VISIBLE);
+            String name = title.getText().toString().replaceFirst("^[▸▾] ", "");
+            title.setText((visible ? "▸ " : "▾ ") + name);
+        });
     }
 
     private void refreshAirPlayStatus() {
@@ -183,51 +262,6 @@ public class SettingsActivity extends AppCompatActivity {
             return path;
         }
         return display + "\n" + path;
-    }
-
-    private void save() {
-        String name = inputName.getText() == null ? "" : inputName.getText().toString().trim();
-        if (name.length() == 0) {
-            Toast.makeText(this, R.string.pref_airplay_name_hint, Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        boolean nameChanged = !name.equals(prefs.getAirPlayName());
-        prefs.setAirPlayName(name);
-
-        if (pendingFolderPath != null) {
-            prefs.setMusicFolderPath(pendingFolderPath, pendingFolderDisplay);
-            pendingFolderPath = null;
-            pendingFolderDisplay = null;
-        }
-
-        String mode;
-        int checked = radioMode.getCheckedRadioButtonId();
-        if (checked == R.id.mode_repeat_one) {
-            mode = Prefs.PLAY_MODE_REPEAT_ONE;
-        } else if (checked == R.id.mode_shuffle) {
-            mode = Prefs.PLAY_MODE_SHUFFLE;
-        } else if (checked == R.id.mode_folder_loop) {
-            mode = Prefs.PLAY_MODE_FOLDER_LOOP;
-        } else {
-            mode = Prefs.PLAY_MODE_SEQUENCE;
-        }
-        prefs.setPlayMode(mode);
-        prefs.setAutoPlayOnStart(switchAutoPlay.isChecked());
-        prefs.setBalance((seekBalance.getProgress() / 100f) - 1f);
-
-        PlaybackService service = PlaybackService.getInstance();
-        if (service != null) {
-            service.setBalance((seekBalance.getProgress() / 100f) - 1f);
-            service.applyPlayMode(mode);
-            if (nameChanged) {
-                service.restartAirPlay();
-                Toast.makeText(this, R.string.engine_restarting, Toast.LENGTH_SHORT).show();
-            }
-            service.rescanLibrary();
-        }
-        Toast.makeText(this, R.string.saved, Toast.LENGTH_SHORT).show();
-        finish();
     }
 
 }

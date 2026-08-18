@@ -13,6 +13,8 @@ import java.nio.ByteOrder;
 import java.util.Locale;
 import java.util.PriorityQueue;
 
+import com.airmusic.player.playback.FirEqualizer;
+
 /**
  * Multi-room audio player used on both ends of a sync session.
  *
@@ -78,6 +80,7 @@ public class MultiRoomAudioPlayer {
 
     private float balance;
     private volatile float outputGain = 1f;
+    private volatile FirEqualizer firEqualizer;
     private AudioTrack track;
     private Thread writerThread;
 
@@ -101,6 +104,10 @@ public class MultiRoomAudioPlayer {
     }
 
     public void start() {
+        // A freshly started session must be audible: the previous role may
+        // have faded this player to 0 (e.g. receiver exit), and the master
+        // loopback reuses the same instance without an explicit gain reset.
+        outputGain = 1f;
         if (!running) {
             running = true;
             paused = false;
@@ -131,6 +138,10 @@ public class MultiRoomAudioPlayer {
     /** Output gain in [0,1] for fade transitions. */
     public void setOutputGain(float gain) {
         outputGain = Math.max(0f, Math.min(1f, gain));
+    }
+
+    public void setFirEqualizer(FirEqualizer equalizer) {
+        this.firEqualizer = equalizer;
     }
 
     /** Applies the decoded PCM format; resets all stream state. */
@@ -310,6 +321,8 @@ public class MultiRoomAudioPlayer {
             try {
                 byte[] out = resample(head.pcm);
                 applyGain(out);
+                FirEqualizer eq = firEqualizer;
+                if (eq != null) eq.process(out, channels);
                 track.write(out, 0, out.length);
                 synchronized (lock) {
                     queue.poll();

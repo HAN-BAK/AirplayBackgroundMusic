@@ -25,6 +25,7 @@ import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
+import androidx.media3.common.audio.AudioProcessor;
 
 import com.airmusic.player.MainActivity;
 import com.airmusic.player.R;
@@ -38,6 +39,8 @@ import com.airmusic.player.multicast.MultiRoomManager;
 import com.airmusic.player.multicast.MultiRoomStreamer;
 import com.airmusic.player.playback.LocalPlayer;
 import com.airmusic.player.playback.PlayMode;
+import com.airmusic.player.playback.EqAudioProcessor;
+import com.airmusic.player.playback.FirEqualizer;
 import com.airmusic.player.receiver.UsbMediaReceiver;
 import com.airmusic.player.util.PlayerUiState;
 import com.airmusic.player.util.Prefs;
@@ -97,6 +100,9 @@ public class PlaybackService extends Service {
     private AirPlayController airPlayController;
     private DacpClient dacpClient;
     private LocalPlayer localPlayer;
+    private FirEqualizer equalizer;
+    private FirEqualizer airEqualizer;
+    private EqAudioProcessor eqProcessor;
     private MultiRoomManager multiRoomManager;
     private MultiRoomStreamer multiRoomStreamer;
     private MultiRoomAudioPlayer multiRoomAudioPlayer;
@@ -140,11 +146,25 @@ public class PlaybackService extends Service {
         @Override
         public void run() {
             if (state.source == PlayerUiState.Source.LOCAL && state.playing) {
-                state.positionMs = localPlayer.getPosition();
+                long now = System.currentTimeMillis();
+                long pos = localPlayer.getPosition();
+                if (lastTickerWall > 0 && lastTickerPos >= 0) {
+                    long wallDelta = now - lastTickerWall;
+                    long posDelta = pos - lastTickerPos;
+                    if (wallDelta > 200 && wallDelta < 1500 && posDelta >= 0
+                            && posDelta < wallDelta - 180) {
+                        Log.w(TAG, "AUDIO STALL posDelta=" + posDelta
+                                + "ms wallDelta=" + wallDelta + "ms pos=" + pos);
+                        DiagnosticLog.w(TAG, "AUDIO STALL posDelta=" + posDelta
+                                + "ms wallDelta=" + wallDelta + "ms pos=" + pos);
+                    }
+                }
+                lastTickerWall = now;
+                lastTickerPos = pos;
+                state.positionMs = (int) pos;
                 int duration = localPlayer.getDuration();
                 if (duration > 0) state.durationMs = duration;
                 StateBus.get().postState(state);
-                long now = System.currentTimeMillis();
                 if (now - lastTrackSaveTime > 5000) {
                     saveLastTrack();
                     lastTrackSaveTime = now;
@@ -155,6 +175,8 @@ public class PlaybackService extends Service {
     };
 
     private long lastTrackSaveTime;
+    private long lastTickerWall;
+    private long lastTickerPos = -1;
 
     /**
      * Keeps the app in sync with phone-side play/pause:
@@ -850,10 +872,21 @@ public class PlaybackService extends Service {
         airPlayController = new AirPlayController(this, airPlayEvents);
         airPlayController.start(prefs.getAirPlayName());
 
+        equalizer = new FirEqualizer();
+        equalizer.setBandGains(prefs.getEqGains());
+        eqProcessor = new EqAudioProcessor(equalizer);
+        // AirPlay gets its own equalizer instance: local and AirPlay use
+        // different sample rates, and a shared instance would keep flipping
+        // its filter coefficients while the other path is still fading,
+        // producing a transient buzz at every switch.
+        airEqualizer = new FirEqualizer();
+        airEqualizer.setBandGains(prefs.getEqGains());
+        airPlayController.setFirEqualizer(airEqualizer);
+
         multiRoomManager = new MultiRoomManager();
         multiRoomManager.start(prefs.getAirPlayName(), multiRoomEvents);
 
-        localPlayer = new LocalPlayer(this, localListener);
+        localPlayer = new LocalPlayer(this, localListener, new AudioProcessor[]{eqProcessor});
         localPlayer.setMode(state.mode);
         float balance = prefs.getBalance();
         localPlayer.setBalance(balance);
@@ -963,6 +996,13 @@ public class PlaybackService extends Service {
 
     public List<Track> getTracks() {
         return tracks;
+    }
+
+    /** Replaces the service playlist (used after a library rescan). */
+    public void setTracks(List<Track> tracks) {
+        this.tracks = tracks == null
+                ? new java.util.ArrayList<>()
+                : new java.util.ArrayList<>(tracks);
     }
 
     public void playTrack(Track track) {
@@ -1134,6 +1174,21 @@ public class PlaybackService extends Service {
         airPlayController.setBalance(balance);
     }
 
+    /** Applies the 10-band equalizer globally (local, AirPlay, multi-room). */
+    public void setEqualizerGains(double[] gainsDb) {
+        prefs.setEqGains(gainsDb);
+        if (equalizer != null) {
+            equalizer.setBandGains(gainsDb);
+        }
+        if (airEqualizer != null) {
+            airEqualizer.setBandGains(gainsDb);
+        }
+    }
+
+    public FirEqualizer getEqualizer() {
+        return equalizer;
+    }
+
     public void restartAirPlay() {
         DiagnosticLog.i(TAG, "restartAirPlay requested from UI");
         airPlayController.restart(prefs.getAirPlayName());
@@ -1160,6 +1215,12 @@ public class PlaybackService extends Service {
     /** Multi-room sync manager (discovery + master/receiver roles). */
     public MultiRoomManager getMultiRoomManager() {
         return multiRoomManager;
+    }
+
+    /** True while this device is broadcasting to or receiving from multi-room. */
+    public boolean isMultiRoomActive() {
+        return (multiRoomManager != null && multiRoomManager.hasTargets())
+                || state.source == PlayerUiState.Source.REMOTE;
     }
 
     // ------------------------------------------------------------------

@@ -6,6 +6,7 @@ import android.util.Log;
 
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
+import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.exoplayer.ExoPlayer;
 
 import com.airmusic.player.library.Track;
@@ -23,6 +24,10 @@ import java.util.Random;
  * Some TV-box firmwares hijack MediaPlayer into a hardware player (nxplayer)
  * that downmixes audio to mono, breaking balance and volume consistency with
  * AirPlay; ExoPlayer avoids that path entirely.</p>
+ *
+ * <p>Every track gets a fresh ExoPlayer (decoder + AudioTrack + processor
+ * chain), so no state leaks from one song into the next. Track switches are
+ * instantaneous.</p>
  */
 public class LocalPlayer {
 
@@ -39,6 +44,7 @@ public class LocalPlayer {
     private final Context context;
     private final Listener listener;
     private final BalanceAudioProcessor balanceProcessor = new BalanceAudioProcessor();
+    private final AudioProcessor[] preProcessors;
 
     private ExoPlayer player;
     private List<Track> playlist = new ArrayList<>();
@@ -50,14 +56,18 @@ public class LocalPlayer {
     private float balance;
     private float masterGain = 1f;
 
-    public LocalPlayer(Context context, Listener listener) {
+    public LocalPlayer(Context context, Listener listener, AudioProcessor[] preProcessors) {
         this.context = context.getApplicationContext();
         this.listener = listener;
+        this.preProcessors = preProcessors != null ? preProcessors : new AudioProcessor[0];
     }
 
     private ExoPlayer ensurePlayer() {
         if (player == null) {
-            player = new ExoPlayer.Builder(context, new BalanceRenderersFactory(context, balanceProcessor)).build();
+            AudioProcessor[] all = new AudioProcessor[preProcessors.length + 1];
+            System.arraycopy(preProcessors, 0, all, 0, preProcessors.length);
+            all[preProcessors.length] = balanceProcessor;
+            player = new ExoPlayer.Builder(context, new BalanceRenderersFactory(context, all)).build();
             player.setVolume(masterGain);
             player.addListener(new Player.Listener() {
                 @Override
@@ -83,9 +93,9 @@ public class LocalPlayer {
     }
 
     public synchronized void setPlaylist(List<Track> tracks, int startIndex) {
-        releasePlayer();
         playlist = new ArrayList<>(tracks);
-        currentIndex = startIndex >= 0 && startIndex < playlist.size() ? startIndex : (playlist.isEmpty() ? -1 : 0);
+        currentIndex = startIndex >= 0 && startIndex < playlist.size()
+                ? startIndex : (playlist.isEmpty() ? -1 : 0);
         buildShuffleOrder();
         if (currentIndex >= 0) {
             openCurrentTrack(0);
@@ -170,10 +180,7 @@ public class LocalPlayer {
             stop();
             return;
         }
-        currentIndex = nextIndex;
-        openCurrentTrack(0);
-        if (listener != null) listener.onLocalTrackChanged(getCurrentTrack());
-        play();
+        switchTrack(nextIndex);
     }
 
     public synchronized void previous() {
@@ -190,10 +197,16 @@ public class LocalPlayer {
                         ? playlist.size() - 1 : 0;
             }
         }
-        currentIndex = prevIndex;
+        switchTrack(prevIndex);
+    }
+
+    /** Switches instantly to {@code newIndex}. */
+    private void switchTrack(int newIndex) {
+        if (newIndex < 0 || newIndex >= playlist.size()) return;
+        currentIndex = newIndex;
         openCurrentTrack(0);
-        if (listener != null) listener.onLocalTrackChanged(getCurrentTrack());
         play();
+        if (listener != null) listener.onLocalTrackChanged(getCurrentTrack());
     }
 
     public synchronized void seekTo(int positionMs) {
@@ -267,6 +280,7 @@ public class LocalPlayer {
         if (currentIndex < 0 || currentIndex >= playlist.size()) return;
         Track track = playlist.get(currentIndex);
         ExoPlayer p = ensurePlayer();
+        p.setVolume(masterGain);
         try {
             p.setMediaItem(MediaItem.fromUri(track.uri));
             p.prepare();

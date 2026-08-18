@@ -15,6 +15,7 @@ import android.util.Log;
 
 import com.airmusic.player.util.AndroidLogHandler;
 import com.airmusic.player.util.DiagnosticLog;
+import com.airmusic.player.playback.FirEqualizer;
 
 import androidx.core.content.ContextCompat;
 
@@ -257,6 +258,11 @@ public class AirPlayController {
 	/** Sets an extra output gain in [0, 1] (fade control). */
 	public void setVolumeGain(float gain) {
 		AirPlayServer.getIstance().setVolumeGain(gain);
+	}
+
+	/** Shares the app-wide equalizer with the AirPlay output path. */
+	public void setFirEqualizer(FirEqualizer equalizer) {
+		AirPlayServer.getIstance().setFirEqualizer(equalizer);
 	}
 
 	/**

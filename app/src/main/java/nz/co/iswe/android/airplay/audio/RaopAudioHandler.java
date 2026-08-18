@@ -78,6 +78,7 @@ import org.phlo.AirReceiver.Base64;
 import org.phlo.AirReceiver.ProtocolException;
 import org.phlo.AirReceiver.RaopRtpRetransmitRequestHandler;
 import org.phlo.AirReceiver.RaopRtspMethods;
+import com.airmusic.player.playback.FirEqualizer;
 
 /**
  * Handles the configuration, creation and destruction of RTP channels.
@@ -278,6 +279,9 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 
 	/** Extra output gain in [0, 1] for smooth volume transitions. */
 	private volatile float volumeGain = 1.0f;
+
+	/** App-wide equalizer shared with the AirPlay output path. */
+	private volatile FirEqualizer firEqualizer;
 
 	/** The RTSP connection channel, used to take control back from AirPlay. */
 	private volatile Channel rtspConnectionChannel;
@@ -679,6 +683,8 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 		audioOutputQueue = new AudioOutputQueue(audioStreamInformationProvider);
 		audioOutputQueue.setBalance(balance);
 		audioOutputQueue.setOutputGain(volumeGain);
+		audioOutputQueue.setFirEqualizer(firEqualizer != null
+				? firEqualizer : AirPlayServer.getIstance().getFirEqualizer());
 
 		/* Create timing handle, using the AudioOutputQueue as time source */
 		timingHandler = new RaopRtpTimingHandler(audioOutputQueue);
@@ -949,8 +955,10 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 				final String value = m_parameter.group(2);
 				if ("volume".equals(name)) {
 					try {
+						LOG.info("SET_PARAMETER volume received: " + value);
 						applyVolume(Float.parseFloat(value));
 					} catch (final Throwable ignored) {
+						LOG.info("SET_PARAMETER volume parse failed for: " + value);
 					}
 				}
 				else if ("progress".equals(name)) {
@@ -1068,6 +1076,7 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 	}
 
 	private void applyVolume(final float volumeDb) {
+		LOG.info("applyVolume: " + volumeDb + " dB");
 		if (audioOutputQueue != null) {
 			audioOutputQueue.setRequestedVolume(volumeDb);
 		}
@@ -1249,6 +1258,14 @@ public class RaopAudioHandler extends SimpleChannelUpstreamHandler {
 		final AudioOutputQueue queue = audioOutputQueue;
 		if (queue != null) {
 			queue.setOutputGain(this.volumeGain);
+		}
+	}
+
+	public void setFirEqualizer(final FirEqualizer equalizer) {
+		this.firEqualizer = equalizer;
+		final AudioOutputQueue queue = audioOutputQueue;
+		if (queue != null) {
+			queue.setFirEqualizer(equalizer);
 		}
 	}
 

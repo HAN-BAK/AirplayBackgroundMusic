@@ -17,6 +17,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
 import android.widget.ImageView;
+import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -28,16 +29,23 @@ import androidx.core.content.ContextCompat;
 
 import com.airmusic.player.multicast.MultiRoomDiscovery;
 import com.airmusic.player.multicast.MultiRoomManager;
+import com.airmusic.player.playback.EqAudioProcessor;
 import com.airmusic.player.service.PlaybackService;
 import com.airmusic.player.util.PlayerUiState;
 import com.airmusic.player.util.Prefs;
 import com.airmusic.player.util.StateBus;
 
+import nz.co.iswe.android.airplay.audio.AudioOutputQueue;
+
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
+
+    private static final String ACTION_CAPTURE_START = "com.airmusic.player.CAPTURE_START";
+    private static final String ACTION_CAPTURE_STOP = "com.airmusic.player.CAPTURE_STOP";
 
     private ImageView albumArt;
     private TextView trackTitle;
@@ -48,6 +56,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView durationText;
     private ImageButton btnPlay;
     private ImageButton btnMulticast;
+    private ImageButton btnApps;
+    private ProgressBar multicastProgress;
     private SeekBar seekBar;
     private SeekBar volumeSeek;
     private View seekRow;
@@ -62,6 +72,15 @@ public class MainActivity extends AppCompatActivity {
         public void run() {
             syncVolumeSlider();
             volumePollHandler.postDelayed(this, 400);
+        }
+    };
+
+    /** Restores the disconnect button if the remote session never ends. */
+    private final Runnable restoreMulticastUi = new Runnable() {
+        @Override
+        public void run() {
+            multicastProgress.setVisibility(View.GONE);
+            btnMulticast.setVisibility(View.VISIBLE);
         }
     };
 
@@ -80,6 +99,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        handleCaptureIntent(getIntent());
 
         albumArt = findViewById(R.id.album_art);
         trackTitle = findViewById(R.id.track_title);
@@ -90,6 +110,8 @@ public class MainActivity extends AppCompatActivity {
         durationText = findViewById(R.id.duration_text);
         btnPlay = findViewById(R.id.btn_play);
         btnMulticast = findViewById(R.id.btn_multicast);
+        multicastProgress = findViewById(R.id.multicast_progress);
+        btnApps = findViewById(R.id.btn_apps);
         seekBar = findViewById(R.id.seek_bar);
         volumeSeek = findViewById(R.id.volume_seek);
         seekRow = findViewById(R.id.seek_row);
@@ -123,7 +145,15 @@ public class MainActivity extends AppCompatActivity {
             if (lastState != null && lastState.source == PlayerUiState.Source.REMOTE) {
                 // Receiver UI: ask the master to disconnect this device.
                 PlaybackService service = PlaybackService.getInstance();
-                if (service != null) service.disconnectFromMaster();
+                if (service != null) {
+                    // Show a loading indicator while the fade-out + network
+                    // disconnect runs, so the tap does not look stuck.
+                    multicastProgress.setVisibility(View.VISIBLE);
+                    btnMulticast.setVisibility(View.INVISIBLE);
+                    volumePollHandler.removeCallbacks(restoreMulticastUi);
+                    volumePollHandler.postDelayed(restoreMulticastUi, 8000);
+                    service.disconnectFromMaster();
+                }
             } else {
                 openMultiRoomDialog();
             }
@@ -238,9 +268,33 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         StateBus.get().addListener(stateListener);
+        btnApps.setVisibility(new Prefs(this).isShowAppsButton()
+                ? View.VISIBLE : View.GONE);
         syncVolumeSlider();
         volumePollHandler.removeCallbacks(volumePoll);
         volumePollHandler.postDelayed(volumePoll, 400);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        handleCaptureIntent(intent);
+    }
+
+    /** Debug-only PCM capture toggle driven from adb intents. */
+    private void handleCaptureIntent(Intent intent) {
+        if (intent == null || intent.getAction() == null) return;
+        String action = intent.getAction();
+        if (ACTION_CAPTURE_START.equals(action)) {
+            File dir = getExternalFilesDir(null);
+            if (dir != null) {
+                EqAudioProcessor.startCapture(new File(dir, "eq_capture.pcm"));
+                AudioOutputQueue.startCapture(new File(dir, "eq_capture_airplay.pcm"));
+            }
+        } else if (ACTION_CAPTURE_STOP.equals(action)) {
+            EqAudioProcessor.stopCapture();
+            AudioOutputQueue.stopCapture();
+        }
     }
 
     @Override
@@ -356,12 +410,21 @@ public class MainActivity extends AppCompatActivity {
 
         if (s.source == PlayerUiState.Source.AIRPLAY) {
             // Multi-room is meaningless while receiving AirPlay.
+            multicastProgress.setVisibility(View.GONE);
+            volumePollHandler.removeCallbacks(restoreMulticastUi);
             btnMulticast.setVisibility(View.GONE);
         } else if (s.source == PlayerUiState.Source.REMOTE) {
-            btnMulticast.setVisibility(View.VISIBLE);
-            btnMulticast.setImageResource(R.drawable.ic_disconnect);
-            btnMulticast.setContentDescription(getString(R.string.multicast_disconnect));
+            // While a disconnect is fading out, incoming clock refreshes
+            // arrive every ~500 ms; don't re-show the button on top of the
+            // loading spinner (they would overlap).
+            if (multicastProgress.getVisibility() != View.VISIBLE) {
+                btnMulticast.setVisibility(View.VISIBLE);
+                btnMulticast.setImageResource(R.drawable.ic_disconnect);
+                btnMulticast.setContentDescription(getString(R.string.multicast_disconnect));
+            }
         } else {
+            multicastProgress.setVisibility(View.GONE);
+            volumePollHandler.removeCallbacks(restoreMulticastUi);
             btnMulticast.setVisibility(View.VISIBLE);
             btnMulticast.setImageResource(R.drawable.ic_multicast);
             btnMulticast.setContentDescription(getString(R.string.multicast));

@@ -259,12 +259,17 @@ public final class MusicLibrary {
         }
 
         List<String> volumes = new ArrayList<>();
-        volumes.add("external");
         if (Build.VERSION.SDK_INT >= 29) {
             Set<String> extra = MediaStore.getExternalVolumeNames(context);
             for (String v : extra) {
+                // "external" is only an alias for the primary volume on
+                // API 29+; scanning both "external" and "external_primary"
+                // would list every song twice, so only use canonical names.
                 if (!volumes.contains(v)) volumes.add(v);
             }
+        }
+        if (volumes.isEmpty()) {
+            volumes.add("external");
         }
 
         for (String volume : volumes) {
@@ -329,7 +334,11 @@ public final class MusicLibrary {
                 Track track = new Track(
                         uri, title, artist, album, duration,
                         folder, data, AudioExt.extensionOf(data == null ? title : data));
-                byUri.put(uri.toString(), track);
+                // Deduplicate by the underlying file path when available: the
+                // same physical file can be reported under several URIs.
+                String key = data != null && data.length() > 0
+                        ? "path:" + data : uri.toString();
+                byUri.put(key, track);
             }
         } catch (Exception e) {
             Log.e(TAG, "queryVolume failed for " + volume, e);

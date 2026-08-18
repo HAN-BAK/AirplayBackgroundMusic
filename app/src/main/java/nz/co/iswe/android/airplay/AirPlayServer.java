@@ -33,6 +33,8 @@ import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import com.airmusic.player.playback.FirEqualizer;
+
 import javax.jmdns.JmDNS;
 import javax.jmdns.ServiceInfo;
 
@@ -130,6 +132,9 @@ public class AirPlayServer implements Runnable {
 
 	/** Extra output gain in [0, 1] for smooth volume transitions. */
 	private volatile float volumeGain = 1.0f;
+
+	/** App-wide equalizer shared with the AirPlay output path. */
+	private volatile FirEqualizer firEqualizer;
 
 	private boolean started;
 
@@ -479,6 +484,18 @@ public class AirPlayServer implements Runnable {
 		if (handler != null) {
 			handler.setVolumeGain(this.volumeGain);
 		}
+	}
+
+	public void setFirEqualizer(final FirEqualizer equalizer) {
+		this.firEqualizer = equalizer;
+		final RaopAudioHandler handler = currentAudioHandler;
+		if (handler != null) {
+			handler.setFirEqualizer(equalizer);
+		}
+	}
+
+	public FirEqualizer getFirEqualizer() {
+		return firEqualizer;
 	}
 
 	/** Ends the active AirPlay session (closes the RTSP connection). */
