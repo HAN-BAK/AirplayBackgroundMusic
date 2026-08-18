@@ -210,10 +210,10 @@ public class SettingsActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         refreshAirPlayStatus();
-        PlaybackService service = PlaybackService.getInstance();
-        boolean mrActive = service != null && service.isMultiRoomActive();
-        btnEqualizer.setEnabled(!mrActive);
-        btnEqualizer.setAlpha(mrActive ? 0.4f : 1f);
+        // The equalizer now uses a dedicated instance for the multi-room
+        // output, so it can stay enabled while multi-room is active.
+        btnEqualizer.setEnabled(true);
+        btnEqualizer.setAlpha(1f);
     }
 
     /** Makes a section header expand/collapse its content. */

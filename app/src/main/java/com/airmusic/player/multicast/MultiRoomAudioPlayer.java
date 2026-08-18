@@ -322,7 +322,12 @@ public class MultiRoomAudioPlayer {
                 byte[] out = resample(head.pcm);
                 applyGain(out);
                 FirEqualizer eq = firEqualizer;
-                if (eq != null) eq.process(out, channels);
+                if (eq != null) {
+                    // The shared equalizer is also used by local/AirPlay, so
+                    // re-assert this stream's sample rate (no-op if unchanged).
+                    eq.setSampleRate(sampleRate);
+                    eq.process(out, channels);
+                }
                 track.write(out, 0, out.length);
                 synchronized (lock) {
                     queue.poll();

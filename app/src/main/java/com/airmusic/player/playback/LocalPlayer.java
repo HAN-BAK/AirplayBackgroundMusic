@@ -2,6 +2,8 @@ package com.airmusic.player.playback;
 
 import android.content.Context;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.media3.common.MediaItem;
@@ -26,12 +28,17 @@ import java.util.Random;
  * AirPlay; ExoPlayer avoids that path entirely.</p>
  *
  * <p>Every track gets a fresh ExoPlayer (decoder + AudioTrack + processor
- * chain), so no state leaks from one song into the next. Track switches are
- * instantaneous.</p>
+ * chain), so no state leaks from one song into the next. Local song switches
+ * (next/prev/library) use a short non-crossfade: the old song fades out over
+ * 1000 ms, the player switches, then the new song fades in over 1000 ms. The
+ * fade is skipped while multi-room is active (the stream owns the output).</p>
  */
 public class LocalPlayer {
 
     private static final String TAG = "LocalPlayer";
+    /** 100 steps of 10 ms = 1000 ms per fade half. */
+    private static final int FADE_STEPS = 100;
+    private static final long FADE_STEP_MS = 10;
 
     public interface Listener {
         void onLocalTrackChanged(Track track);
@@ -41,10 +48,30 @@ public class LocalPlayer {
         void onLocalPlaybackEnded();
     }
 
+    /** Lets the owner (PlaybackService) opt out of the switch fade, e.g. while
+     *  multi-room is broadcasting and the stream owns the audible output. */
+    public interface FadeGate {
+        boolean shouldFadeOnSwitch();
+    }
+
     private final Context context;
     private final Listener listener;
+    private final Handler fadeHandler = new Handler(Looper.getMainLooper());
     private final BalanceAudioProcessor balanceProcessor = new BalanceAudioProcessor();
     private final AudioProcessor[] preProcessors;
+
+    private FadeGate fadeGate;
+    private Runnable switchFadeRunnable;
+    private List<Track> pendingPlaylist;
+    private int pendingIndex = -1;
+    /** Index the next queued next/prev tap should advance from. */
+    private int queuedBaseIndex = -1;
+    private boolean fadeBusy;
+    private boolean fadeOutPhase;
+    private int fadeStep;
+    private float fadeStartGain = 1f;
+    /** Set when a song ends while a user-initiated switch fade is running. */
+    private boolean autoAdvancePending;
 
     private ExoPlayer player;
     private List<Track> playlist = new ArrayList<>();
@@ -60,6 +87,15 @@ public class LocalPlayer {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.preProcessors = preProcessors != null ? preProcessors : new AudioProcessor[0];
+    }
+
+    /** Sets the gate that decides whether song switches use the fade. */
+    public synchronized void setFadeGate(FadeGate gate) {
+        this.fadeGate = gate;
+    }
+
+    private boolean shouldFade() {
+        return fadeGate == null || fadeGate.shouldFadeOnSwitch();
     }
 
     private ExoPlayer ensurePlayer() {
@@ -92,13 +128,22 @@ public class LocalPlayer {
         return player;
     }
 
-    public synchronized void setPlaylist(List<Track> tracks, int startIndex) {
-        playlist = new ArrayList<>(tracks);
-        currentIndex = startIndex >= 0 && startIndex < playlist.size()
-                ? startIndex : (playlist.isEmpty() ? -1 : 0);
-        buildShuffleOrder();
-        if (currentIndex >= 0) {
-            openCurrentTrack(0);
+    /** @return true if a switch fade was started (caller must not play/metadata yet). */
+    public synchronized boolean setPlaylist(List<Track> tracks, int startIndex) {
+        int idx = startIndex >= 0 && startIndex < tracks.size()
+                ? startIndex : (tracks.isEmpty() ? -1 : 0);
+        if (idx >= 0 && playing && player != null && shouldFade()) {
+            // Library switch while playing: fade the old song out first.
+            requestFadeSwitch(new ArrayList<>(tracks), idx);
+            return true;
+        } else {
+            playlist = new ArrayList<>(tracks);
+            currentIndex = idx;
+            buildShuffleOrder();
+            if (currentIndex >= 0) {
+                openCurrentTrack(0);
+            }
+            return false;
         }
     }
 
@@ -160,6 +205,7 @@ public class LocalPlayer {
     }
 
     public synchronized void pause() {
+        cancelSwitchFade();
         if (player != null && playing) {
             player.pause();
         }
@@ -168,6 +214,7 @@ public class LocalPlayer {
     }
 
     public synchronized void stop() {
+        cancelSwitchFade();
         playing = false;
         releasePlayer();
         if (listener != null) listener.onLocalStateChanged(false);
@@ -175,38 +222,188 @@ public class LocalPlayer {
 
     public synchronized void next() {
         if (playlist.isEmpty()) return;
-        int nextIndex = nextIndex(true);
+        int base = queuedBaseIndex >= 0 ? queuedBaseIndex : currentIndex;
+        int nextIndex = nextIndexFrom(base, true);
         if (nextIndex < 0) {
             stop();
             return;
         }
-        switchTrack(nextIndex);
+        if (playing && player != null && shouldFade()) {
+            queuedBaseIndex = nextIndex;
+            requestFadeSwitch(null, nextIndex);
+        } else {
+            switchTrack(nextIndex);
+        }
     }
 
     public synchronized void previous() {
         if (playlist.isEmpty()) return;
+        int base = queuedBaseIndex >= 0 ? queuedBaseIndex : currentIndex;
         int prevIndex;
-        if (mode == PlayMode.SHUFFLE && shuffleOrder.size() > 1) {
-            int pos = shuffleOrder.indexOf(currentIndex);
+        if (mode == PlayMode.REPEAT_ONE) {
+            prevIndex = base;
+        } else if (mode == PlayMode.SHUFFLE && shuffleOrder.size() > 1) {
+            int pos = shuffleOrder.indexOf(base);
             pos = (pos - 1 + shuffleOrder.size()) % shuffleOrder.size();
             prevIndex = shuffleOrder.get(pos);
         } else {
-            prevIndex = currentIndex - 1;
+            prevIndex = base - 1;
             if (prevIndex < 0) {
-                prevIndex = (mode == PlayMode.FOLDER_LOOP || mode == PlayMode.REPEAT_ONE)
-                        ? playlist.size() - 1 : 0;
+                prevIndex = (mode == PlayMode.FOLDER_LOOP) ? playlist.size() - 1 : 0;
             }
         }
-        switchTrack(prevIndex);
+        if (playing && player != null && shouldFade()) {
+            queuedBaseIndex = prevIndex;
+            requestFadeSwitch(null, prevIndex);
+        } else {
+            switchTrack(prevIndex);
+        }
     }
 
     /** Switches instantly to {@code newIndex}. */
     private void switchTrack(int newIndex) {
         if (newIndex < 0 || newIndex >= playlist.size()) return;
+        if (playing && player != null && shouldFade()) {
+            requestFadeSwitch(null, newIndex);
+            return;
+        }
+        // Not playing (e.g. paused after a fade-out): switch and start the
+        // new song at the normal volume instead of staying silent at 0.
+        setMasterGain(1f);
         currentIndex = newIndex;
         openCurrentTrack(0);
         play();
         if (listener != null) listener.onLocalTrackChanged(getCurrentTrack());
+    }
+
+    /**
+     * Requests a non-crossfade song switch. Rapid taps coalesce: only the
+     * latest target is played, so tapping next five times quickly goes
+     * straight to the fifth song instead of playing every song in between.
+     * The current song fades out over 1000 ms, the player switches, then the
+     * new song fades in over 1000 ms; the fade is never cut in half.
+     */
+    private void requestFadeSwitch(List<Track> newPlaylist, int newIndex) {
+        if (newPlaylist == null && newIndex < 0) return;
+        if (newPlaylist != null && (newIndex < 0 || newIndex >= newPlaylist.size())) return;
+        // Latest tap wins: replace the pending target.
+        pendingPlaylist = newPlaylist != null ? new ArrayList<>(newPlaylist) : null;
+        pendingIndex = newIndex;
+        Log.i(TAG, "requestFadeSwitch -> index=" + newIndex
+                + " fadeBusy=" + fadeBusy + " masterGain=" + masterGain);
+        // Immediate feedback: the UI metadata moves to the tapped song right
+        // away, even while the audio transition is still running.
+        if (listener != null) {
+            List<Track> src = newPlaylist != null ? newPlaylist : playlist;
+            if (newIndex >= 0 && newIndex < src.size()) {
+                listener.onLocalTrackChanged(src.get(newIndex));
+            }
+        }
+        if (!fadeBusy) {
+            startFadeSequence();
+        }
+    }
+
+    /** Starts the fade-out phase of a switch transition. */
+    private void startFadeSequence() {
+        fadeBusy = true;
+        fadeOutPhase = true;
+        fadeStep = 0;
+        fadeStartGain = getMasterGain();
+        Log.i(TAG, "startFadeSequence out startGain=" + fadeStartGain);
+        switchFadeRunnable = new Runnable() {
+            @Override
+            public void run() {
+                stepFade();
+            }
+        };
+        fadeHandler.post(switchFadeRunnable);
+    }
+
+    private void stepFade() {
+        fadeStep++;
+        if (fadeOutPhase) {
+            float v = fadeStartGain * (1f - fadeStep / (float) FADE_STEPS);
+            setMasterGain(Math.max(0f, v));
+            if (fadeStep >= FADE_STEPS) {
+                setMasterGain(0f);
+                Log.i(TAG, "fade-out done -> performPendingSwitch pending=" + pendingIndex);
+                performPendingSwitch();
+                fadeOutPhase = false;
+                fadeStep = 0;
+                fadeHandler.postDelayed(switchFadeRunnable, FADE_STEP_MS);
+                return;
+            }
+        } else {
+            float v = fadeStep / (float) FADE_STEPS;
+            setMasterGain(Math.min(1f, v));
+            if (fadeStep >= FADE_STEPS) {
+                setMasterGain(1f);
+                Log.i(TAG, "fade-in done current=" + currentIndex
+                        + " pending=" + pendingIndex
+                        + " autoAdvancePending=" + autoAdvancePending);
+                if (pendingPlaylist != null
+                        || (pendingIndex >= 0 && pendingIndex != currentIndex)) {
+                    // A newer tap arrived while fading in: switch again.
+                    fadeOutPhase = true;
+                    fadeStep = 0;
+                    fadeStartGain = getMasterGain();
+                    fadeHandler.postDelayed(switchFadeRunnable, FADE_STEP_MS);
+                    return;
+                }
+                fadeBusy = false;
+                switchFadeRunnable = null;
+                pendingIndex = -1;
+                pendingPlaylist = null;
+                queuedBaseIndex = -1;
+                if (autoAdvancePending) {
+                    // A song ended while the fade was running; advance now.
+                    autoAdvancePending = false;
+                    autoAdvance();
+                }
+                return;
+            }
+        }
+        fadeHandler.postDelayed(switchFadeRunnable, FADE_STEP_MS);
+    }
+
+    /** Applies the pending playlist/index after the fade-out completed.
+     *  {@code pendingIndex} is kept so the fade-in can detect newer taps. */
+    private void performPendingSwitch() {
+        Log.i(TAG, "performPendingSwitch -> current=" + pendingIndex
+                + " (was " + currentIndex + ")");
+        if (pendingPlaylist != null) {
+            playlist = pendingPlaylist;
+            pendingPlaylist = null;
+            buildShuffleOrder();
+        }
+        if (pendingIndex >= 0 && pendingIndex < playlist.size()) {
+            currentIndex = pendingIndex;
+        }
+        openCurrentTrack(0);
+        play();
+        // Publish the track again AFTER the switch: the tap-time metadata
+        // load usually finishes before the fade-out ends, so the async cover
+        // read would be discarded by the "current track" guard. Firing it
+        // here gives the cover a load with correct timing.
+        if (listener != null) {
+            listener.onLocalTrackChanged(getCurrentTrack());
+        }
+    }
+
+    /** Cancels any in-flight song-switch fade (used by pause/stop and the
+     *  service when it takes over the volume for AirPlay/multi-room). */
+    public void cancelSwitchFade() {
+        Log.i(TAG, "cancelSwitchFade");
+        if (switchFadeRunnable != null) {
+            fadeHandler.removeCallbacks(switchFadeRunnable);
+            switchFadeRunnable = null;
+        }
+        fadeBusy = false;
+        pendingIndex = -1;
+        pendingPlaylist = null;
+        queuedBaseIndex = -1;
+        autoAdvancePending = false;
     }
 
     public synchronized void seekTo(int positionMs) {
@@ -243,23 +440,23 @@ public class LocalPlayer {
         return track != null ? (int) track.durationMs : 0;
     }
 
-    private int nextIndex(boolean forward) {
+    private int nextIndexFrom(int base, boolean forward) {
         if (playlist.isEmpty()) return -1;
         if (mode == PlayMode.SHUFFLE && shuffleOrder.size() > 1) {
-            int pos = shuffleOrder.indexOf(currentIndex);
+            int pos = shuffleOrder.indexOf(base);
             if (forward && pos == shuffleOrder.size() - 1) {
                 // One full shuffled round finished: reshuffle so the next
                 // round has a fresh order instead of repeating the same one.
                 buildShuffleOrder();
-                pos = shuffleOrder.indexOf(currentIndex);
+                pos = shuffleOrder.indexOf(base);
             }
             int nextPos = forward ? (pos + 1) % shuffleOrder.size() : (pos - 1 + shuffleOrder.size()) % shuffleOrder.size();
             return shuffleOrder.get(nextPos);
         }
         if (mode == PlayMode.REPEAT_ONE) {
-            return currentIndex;
+            return base;
         }
-        int next = forward ? currentIndex + 1 : currentIndex - 1;
+        int next = forward ? base + 1 : base - 1;
         if (next >= playlist.size()) {
             return mode == PlayMode.FOLDER_LOOP ? 0 : -1;
         }
@@ -291,7 +488,22 @@ public class LocalPlayer {
     }
 
     private void onTrackCompleted() {
-        int next = nextIndex(true);
+        Log.i(TAG, "onTrackCompleted fadeBusy=" + fadeBusy);
+        if (fadeBusy) {
+            // A user-initiated switch fade is running; the song ended
+            // underneath it. Defer the natural advance until the fade
+            // finishes, otherwise the two transitions fight and the track
+            // can bounce back and forth.
+            autoAdvancePending = true;
+            return;
+        }
+        autoAdvance();
+    }
+
+    /** Advances to the next song after the previous one ended naturally. */
+    private void autoAdvance() {
+        Log.i(TAG, "autoAdvance from=" + currentIndex);
+        int next = nextIndexFrom(currentIndex, true);
         if (next < 0) {
             synchronized (this) {
                 playing = false;
@@ -303,6 +515,10 @@ public class LocalPlayer {
         }
         synchronized (this) {
             currentIndex = next;
+            if (shouldFade()) {
+                // The old song already ended; just fade the new one in.
+                setMasterGain(0f);
+            }
             openCurrentTrack(0);
             if (player != null) {
                 player.play();
@@ -310,6 +526,24 @@ public class LocalPlayer {
             }
         }
         if (listener != null) listener.onLocalTrackChanged(getCurrentTrack());
+        if (shouldFade()) {
+            fadeInFromZero();
+        }
+    }
+
+    /** Fades the master gain from 0 to 1 over 1000 ms. */
+    private void fadeInFromZero() {
+        cancelSwitchFade();
+        fadeBusy = true;
+        fadeOutPhase = false;
+        fadeStep = 0;
+        switchFadeRunnable = new Runnable() {
+            @Override
+            public void run() {
+                stepFade();
+            }
+        };
+        fadeHandler.post(switchFadeRunnable);
     }
 
     private void releasePlayer() {
@@ -323,6 +557,7 @@ public class LocalPlayer {
     }
 
     public synchronized void release() {
+        cancelSwitchFade();
         playing = false;
         releasePlayer();
         playlist.clear();

@@ -102,6 +102,7 @@ public class PlaybackService extends Service {
     private LocalPlayer localPlayer;
     private FirEqualizer equalizer;
     private FirEqualizer airEqualizer;
+    private FirEqualizer multiRoomEqualizer;
     private EqAudioProcessor eqProcessor;
     private MultiRoomManager multiRoomManager;
     private MultiRoomStreamer multiRoomStreamer;
@@ -534,18 +535,22 @@ public class PlaybackService extends Service {
 
     private void stopMultiRoomStreamer() {
         main.removeCallbacks(multiRoomClockTicker);
-        if (multiRoomStreamer != null) {
-            multiRoomStreamer.stop();
-            multiRoomStreamer = null;
+        MultiRoomStreamer streamer = multiRoomStreamer;
+        multiRoomStreamer = null;
+        if (streamer != null) {
+            streamer.stop();
         }
         MultiRoomAudioPlayer p = multiRoomAudioPlayer;
         if (p != null && p.isRunning()) {
             p.stop();
         }
-        // Hand the audible output back to the ExoPlayer when local music is
-        // still playing (e.g. all receivers were deselected).
-        if (state.source == PlayerUiState.Source.LOCAL && localPlayer.isPlaying()
-                && localFade < 1f) {
+        // Hand the audible output back to the ExoPlayer only when a multi-room
+        // stream was actually running and muted it (e.g. receivers were
+        // deselected). A plain song switch calls this with no streamer active
+        // and must NOT trigger a service fade that would fight the local
+        // song-switch fade (it used to cancel it and cause volume pumping).
+        if (streamer != null && state.source == PlayerUiState.Source.LOCAL
+                && localPlayer.isPlaying()) {
             fadeLocalIn();
         }
     }
@@ -592,6 +597,7 @@ public class PlaybackService extends Service {
         if (multiRoomAudioPlayer == null) {
             multiRoomAudioPlayer = new MultiRoomAudioPlayer();
             multiRoomAudioPlayer.setBalance(prefs.getBalance());
+            multiRoomAudioPlayer.setFirEqualizer(multiRoomEqualizer);
             // Keep the master's queue healthy (150 ms) and let the receiver
             // pull ahead by 80 ms via the broadcast compensation below.
             multiRoomAudioPlayer.setLatencyCompensationMs(150);
@@ -882,11 +888,21 @@ public class PlaybackService extends Service {
         airEqualizer = new FirEqualizer();
         airEqualizer.setBandGains(prefs.getEqGains());
         airPlayController.setFirEqualizer(airEqualizer);
+        multiRoomEqualizer = new FirEqualizer();
+        multiRoomEqualizer.setBandGains(prefs.getEqGains());
 
         multiRoomManager = new MultiRoomManager();
         multiRoomManager.start(prefs.getAirPlayName(), multiRoomEvents);
 
         localPlayer = new LocalPlayer(this, localListener, new AudioProcessor[]{eqProcessor});
+        // Skip the 1000 ms local song-switch fade while multi-room is active:
+        // the stream (or this device as a receiver) owns the audible output.
+        localPlayer.setFadeGate(() -> {
+            boolean mr = (multiRoomManager != null && multiRoomManager.hasTargets())
+                    || multiRoomStreamer != null
+                    || state.source == PlayerUiState.Source.REMOTE;
+            return !mr;
+        });
         localPlayer.setMode(state.mode);
         float balance = prefs.getBalance();
         localPlayer.setBalance(balance);
@@ -1006,6 +1022,7 @@ public class PlaybackService extends Service {
     }
 
     public void playTrack(Track track) {
+        cancelServiceFade();
         int index = tracks.indexOf(track);
         if (index < 0) {
             tracks = new java.util.ArrayList<>(MusicLibrary.getInstance().getCachedTracks());
@@ -1018,11 +1035,14 @@ public class PlaybackService extends Service {
         }
         if (index < 0) return;
         state.source = PlayerUiState.Source.LOCAL;
-        localPlayer.setMasterGain(0f);
-        localPlayer.setPlaylist(tracks, index);
-        localPlayer.play();
-        fadeLocalIn();
-        loadMetadata(localPlayer.getCurrentTrack());
+        boolean fading = localPlayer.setPlaylist(tracks, index);
+        if (!fading) {
+            // Fresh start (nothing playing): fade the new song in ourselves.
+            localPlayer.setMasterGain(0f);
+            localPlayer.play();
+            fadeLocalIn(1000);
+            loadMetadata(localPlayer.getCurrentTrack());
+        }
         scheduleMultiRoomCalibration();
     }
 
@@ -1106,6 +1126,10 @@ public class PlaybackService extends Service {
             return;
         }
         if (state.source == PlayerUiState.Source.LOCAL) {
+            // Stop any pending service fade (pause/toggle fade-out) so it
+            // cannot fight the local song-switch fade over the volume.
+            cancelServiceFade();
+            Log.i(TAG, "next()");
             localPlayer.next();
         } else if (state.source == PlayerUiState.Source.AIRPLAY) {
             sendAirPlayTransport(true);
@@ -1118,6 +1142,8 @@ public class PlaybackService extends Service {
             return;
         }
         if (state.source == PlayerUiState.Source.LOCAL) {
+            cancelServiceFade();
+            Log.i(TAG, "previous()");
             localPlayer.previous();
         } else if (state.source == PlayerUiState.Source.AIRPLAY) {
             sendAirPlayTransport(false);
@@ -1182,6 +1208,9 @@ public class PlaybackService extends Service {
         }
         if (airEqualizer != null) {
             airEqualizer.setBandGains(gainsDb);
+        }
+        if (multiRoomEqualizer != null) {
+            multiRoomEqualizer.setBandGains(gainsDb);
         }
     }
 
@@ -1458,7 +1487,12 @@ public class PlaybackService extends Service {
 	 */
 	private void fadeLocalOut(Runnable onDone) {
 		cancelFade();
-		final float start = localFade;
+		Log.i(TAG, "fadeLocalOut start gain="
+				+ (localPlayer != null ? localPlayer.getMasterGain() : localFade));
+		// Start from the player's ACTUAL gain: the local song-switch fade
+		// drives the player volume directly, so the service-side localFade
+		// field can be stale (even 0), which would make this fade a no-op.
+		final float start = localPlayer != null ? localPlayer.getMasterGain() : localFade;
 		final long durationMs = 2500;
 		final long stepMs = 25;
 		final int steps = (int) (durationMs / stepMs);
@@ -1489,6 +1523,7 @@ public class PlaybackService extends Service {
 
 	/** Fades the local player volume up to full over {@code durationMs}. */
 	private void fadeLocalIn(long durationMs) {
+		Log.i(TAG, "fadeLocalIn(" + durationMs + ") streamer=" + (multiRoomStreamer != null));
 		if (multiRoomStreamer != null) {
 			// Multi-room stream owns the master's output; never unmute the
 			// ExoPlayer while it is active (would cause double audio).
@@ -1573,7 +1608,17 @@ public class PlaybackService extends Service {
 		main.post(airFadeRunnable);
 	}
 
-	private void cancelFade() {
+    private void cancelFade() {
+        cancelServiceFade();
+        if (localPlayer != null) {
+            localPlayer.cancelSwitchFade();
+        }
+	}
+
+	/** Cancels only the service-side volume fade (pause/toggle/play fades),
+	 *  leaving the local player's song-switch fade untouched. */
+    private void cancelServiceFade() {
+        Log.i(TAG, "cancelServiceFade fadeRunnable=" + (fadeRunnable != null));
 		if (fadeRunnable != null) {
 			main.removeCallbacks(fadeRunnable);
 			fadeRunnable = null;
@@ -1640,10 +1685,18 @@ public class PlaybackService extends Service {
 
     private void loadMetadata(Track track) {
         if (track == null) return;
+        // Only clear the previous cover once this track is actually the one
+        // being played (i.e. the fade-out finished and the player switched).
+        // Tap-time previews must keep the old cover until the switch.
+        Track cur = localPlayer != null ? localPlayer.getCurrentTrack() : null;
+        boolean isCurrent = cur != null && cur.equals(track);
         state.title = track.displayTitle();
         state.artist = track.displayArtist();
         state.album = track.displayAlbum();
         state.durationMs = (int) track.durationMs;
+        if (isCurrent) {
+            state.art = null;
+        }
 		publish();
 
         final Track target = track;
