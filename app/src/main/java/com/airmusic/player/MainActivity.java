@@ -56,6 +56,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView durationText;
     private ImageButton btnPlay;
     private ImageButton btnMulticast;
+    private ImageButton btnLibrary;
     private ImageButton btnApps;
     private ProgressBar multicastProgress;
     private SeekBar seekBar;
@@ -110,6 +111,7 @@ public class MainActivity extends AppCompatActivity {
         durationText = findViewById(R.id.duration_text);
         btnPlay = findViewById(R.id.btn_play);
         btnMulticast = findViewById(R.id.btn_multicast);
+        btnLibrary = findViewById(R.id.btn_library);
         multicastProgress = findViewById(R.id.multicast_progress);
         btnApps = findViewById(R.id.btn_apps);
         seekBar = findViewById(R.id.seek_bar);
@@ -413,7 +415,11 @@ public class MainActivity extends AppCompatActivity {
             multicastProgress.setVisibility(View.GONE);
             volumePollHandler.removeCallbacks(restoreMulticastUi);
             btnMulticast.setVisibility(View.GONE);
+            btnLibrary.setVisibility(View.GONE);
         } else if (s.source == PlayerUiState.Source.REMOTE) {
+            // The library belongs to this device's own collection, not the
+            // stream being received from the master.
+            btnLibrary.setVisibility(View.GONE);
             // While a disconnect is fading out, incoming clock refreshes
             // arrive every ~500 ms; don't re-show the button on top of the
             // loading spinner (they would overlap).
@@ -423,6 +429,7 @@ public class MainActivity extends AppCompatActivity {
                 btnMulticast.setContentDescription(getString(R.string.multicast_disconnect));
             }
         } else {
+            btnLibrary.setVisibility(View.VISIBLE);
             multicastProgress.setVisibility(View.GONE);
             volumePollHandler.removeCallbacks(restoreMulticastUi);
             btnMulticast.setVisibility(View.VISIBLE);

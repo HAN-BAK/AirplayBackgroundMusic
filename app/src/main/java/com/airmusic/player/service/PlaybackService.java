@@ -1014,6 +1014,30 @@ public class PlaybackService extends Service {
         return tracks;
     }
 
+    /** The local track currently being played, or null outside local mode. */
+    public Track getCurrentTrack() {
+        if (state.source == PlayerUiState.Source.LOCAL && localPlayer != null) {
+            return localPlayer.getCurrentTrack();
+        }
+        return null;
+    }
+
+    /** True while the library should highlight a local/multi-room track. */
+    public boolean isShowingLibraryTrack() {
+        return state.source == PlayerUiState.Source.LOCAL
+                || state.source == PlayerUiState.Source.REMOTE;
+    }
+
+    /** Title of the currently shown track (multi-room receiver metadata). */
+    public String getCurrentDisplayTitle() {
+        return state.title;
+    }
+
+    /** Artist of the currently shown track (multi-room receiver metadata). */
+    public String getCurrentDisplayArtist() {
+        return state.artist;
+    }
+
     /** Replaces the service playlist (used after a library rescan). */
     public void setTracks(List<Track> tracks) {
         this.tracks = tracks == null
