@@ -2,8 +2,13 @@ package com.airmusic.player;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.util.Log;
+import android.view.View;
+import android.widget.ImageButton;
+import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -14,19 +19,32 @@ import com.airmusic.player.library.Track;
 import com.airmusic.player.service.PlaybackService;
 import com.airmusic.player.ui.TrackAdapter;
 
+import java.io.File;
 import java.util.List;
-import java.util.ArrayList;
 
-public class LibraryActivity extends AppCompatActivity {
+public class LibraryActivity extends BaseActivity {
 
     private final TrackAdapter adapter = new TrackAdapter();
+    private TextView txtTitle;
+    private TextView txtSelectCount;
+    private ImageButton btnDelete;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_library);
 
-        findViewById(R.id.btn_back).setOnClickListener(v -> finish());
+        txtTitle = findViewById(R.id.txt_title);
+        txtSelectCount = findViewById(R.id.txt_select_count);
+        btnDelete = findViewById(R.id.btn_delete);
+
+        findViewById(R.id.btn_back).setOnClickListener(v -> {
+            if (adapter.isSelectionMode()) {
+                exitSelectionMode();
+            } else {
+                finish();
+            }
+        });
 
         RecyclerView list = findViewById(R.id.track_list);
         list.setLayoutManager(new LinearLayoutManager(this));
@@ -39,6 +57,9 @@ public class LibraryActivity extends AppCompatActivity {
                 finish();
             }
         });
+        adapter.setOnTrackLongClick(track -> updateSelectionUi());
+        adapter.setOnSelectionChanged(count -> updateSelectionUi());
+        btnDelete.setOnClickListener(v -> confirmDelete());
 
         loadTracks();
     }
@@ -55,9 +76,8 @@ public class LibraryActivity extends AppCompatActivity {
                 ? service.getTracks()
                 : MusicLibrary.getInstance().getCachedTracks();
         if (tracks != null && !tracks.isEmpty()) {
-            List<Track> ordered = orderForDisplay(tracks);
-            adapter.setTracks(ordered);
-            applyCurrentTrack(ordered);
+            adapter.setTracks(tracks);
+            applyCurrentTrack(tracks);
         }
         // Always rescan so newly added files (USB, new downloads) show up;
         // the cached list is shown immediately and replaced when ready.
@@ -66,9 +86,8 @@ public class LibraryActivity extends AppCompatActivity {
                 service.setTracks(result);
             }
             if (result != null) {
-                List<Track> ordered = orderForDisplay(result);
-                adapter.setTracks(ordered);
-                applyCurrentTrack(ordered);
+                adapter.setTracks(result);
+                applyCurrentTrack(result);
             }
             if (result != null && result.isEmpty() && error != null) {
                 Toast.makeText(this, error, Toast.LENGTH_LONG).show();
@@ -79,47 +98,75 @@ public class LibraryActivity extends AppCompatActivity {
         });
     }
 
-    /**
-     * Puts the currently playing track at the top of the shown list so the
-     * library opens with the active song front and centre. The underlying
-     * service playlist stays untouched (next/prev order is preserved).
-     */
-    private List<Track> orderForDisplay(List<Track> tracks) {
-        if (tracks == null || tracks.isEmpty()) return tracks;
-        PlaybackService service = PlaybackService.getInstance();
-        if (service == null || !service.isShowingLibraryTrack()) return tracks;
-        Track cur = service.getCurrentTrack();
-        if (cur != null) {
-            for (int i = 0; i < tracks.size(); i++) {
-                if (cur.uri != null && cur.uri.equals(tracks.get(i).uri)) {
-                    return i > 0 ? moveToTop(tracks, i) : tracks;
-                }
-            }
-        } else {
-            String title = service.getCurrentDisplayTitle();
-            String artist = service.getCurrentDisplayArtist();
-            if (title != null && title.length() > 0) {
-                for (int i = 0; i < tracks.size(); i++) {
-                    Track t = tracks.get(i);
-                    if (title.equals(t.displayTitle())
-                            && (artist == null || artist.length() == 0
-                            || artist.equals(t.displayArtist()))) {
-                        return i > 0 ? moveToTop(tracks, i) : tracks;
-                    }
-                }
+    private void updateSelectionUi() {
+        boolean selecting = adapter.isSelectionMode();
+        txtTitle.setVisibility(selecting ? View.GONE : View.VISIBLE);
+        txtSelectCount.setVisibility(selecting ? View.VISIBLE : View.GONE);
+        btnDelete.setVisibility(selecting ? View.VISIBLE : View.GONE);
+        if (selecting) {
+            txtSelectCount.setText(getString(R.string.selected_count, adapter.getSelectedCount()));
+        }
+    }
+
+    private void exitSelectionMode() {
+        adapter.setSelectionMode(false);
+        updateSelectionUi();
+    }
+
+    private void confirmDelete() {
+        final List<Track> selected = adapter.getSelectedTracks();
+        if (selected.isEmpty()) {
+            exitSelectionMode();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.delete)
+                .setMessage(getString(R.string.delete_files_confirm, selected.size()))
+                .setPositiveButton(android.R.string.ok, (d, w) -> deleteTracks(selected))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void deleteTracks(List<Track> selected) {
+        int ok = 0;
+        List<Track> deleted = new java.util.ArrayList<>();
+        for (Track t : selected) {
+            if (deleteFile(t)) {
+                ok++;
+                deleted.add(t);
             }
         }
-        return tracks;
+        exitSelectionMode();
+        Toast.makeText(this, getString(R.string.deleted_count, ok), Toast.LENGTH_SHORT).show();
+        MusicLibrary.getInstance().clearCache();
+        PlaybackService service = PlaybackService.getInstance();
+        if (service != null) {
+            // Remove the files from the playlist immediately and switch the
+            // player to a surviving track if the current one was deleted.
+            service.removeDeletedTracks(deleted);
+        }
+        loadTracks();
     }
 
-    private List<Track> moveToTop(List<Track> tracks, int index) {
-        List<Track> reordered = new ArrayList<>(tracks);
-        Track t = reordered.remove(index);
-        reordered.add(0, t);
-        return reordered;
+    private boolean deleteFile(Track t) {
+        try {
+            if (t.filePath != null && !t.filePath.isEmpty()) {
+                File f = new File(t.filePath);
+                if (f.exists()) {
+                    return f.delete();
+                }
+            }
+            if (t.uri != null) {
+                return getContentResolver().delete(t.uri, null, null) > 0;
+            }
+        } catch (Exception e) {
+            Log.w("LibraryActivity", "delete failed", e);
+        }
+        return false;
     }
 
-    /** Highlights the currently playing track and scrolls it into view. */
+    /** Highlights the currently playing track and scrolls it to the top of
+     *  the visible list (the sort order itself stays unchanged). */
     private void applyCurrentTrack(List<Track> tracks) {
         if (tracks == null || tracks.isEmpty()) return;
         PlaybackService service = PlaybackService.getInstance();
@@ -160,7 +207,7 @@ public class LibraryActivity extends AppCompatActivity {
             list.post(() -> {
                 RecyclerView.LayoutManager lm = list.getLayoutManager();
                 if (lm instanceof LinearLayoutManager) {
-                    ((LinearLayoutManager) lm).scrollToPosition(pos);
+                    ((LinearLayoutManager) lm).scrollToPositionWithOffset(pos, 0);
                 }
             });
         }

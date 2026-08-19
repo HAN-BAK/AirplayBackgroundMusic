@@ -42,7 +42,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends BaseActivity {
 
     private static final String ACTION_CAPTURE_START = "com.airmusic.player.CAPTURE_START";
     private static final String ACTION_CAPTURE_STOP = "com.airmusic.player.CAPTURE_STOP";

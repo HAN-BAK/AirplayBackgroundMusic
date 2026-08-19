@@ -16,7 +16,7 @@ public class PlayerUiState {
     public boolean airPlayPaused;
     public boolean receiverPausedByUser;
     public String clientName = "";
-    public String title = "未在播放";
+    public String title = "";
     public String artist = "";
     public String album = "";
     public Bitmap art;

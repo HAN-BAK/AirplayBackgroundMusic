@@ -1,4 +1,8 @@
-# BukaMusic
+<h1 align="center">BukaMusic</h1>
+
+<p align="center">
+  <img src="docs/logo.png" alt="BukaMusic Logo" width="220" />
+</p>
 
 面向 **Android 6.0（API 23）及以上** 的“背景音乐播放 + AirPlay 接收 + 多房间同步”应用。
 
@@ -69,6 +73,12 @@
 - 天空蓝主题，左侧专辑封面，右侧歌曲信息与播放控制；
 - 底栏：多房间 + 系统音量滑条 + 曲库 + 设置 + “应用”（可像桌面一样打开本机应用）；
 - AirPlay 模式下自动隐藏多房间按钮；多房间接收中显示“断开连接”按钮；
+- **中 / 英 / 日 / 韩四语界面**（设置 → 界面 → 语言，切换后全界面与通知即时生效）；
+- **音乐传输**：设置 → 无线连接 → 音乐传输，扫描二维码或浏览器访问
+  `http://设备IP:端口` 即可上传音乐到本机曲库（网页端与标签页图标随应用主题，
+  四语显示），仅支持音乐格式，上传完成后曲库自动刷新；
+- 曲库长按可多选删除歌曲文件，删除当前播放歌曲时自动切到下一首；
+- “关于”页展示开发者、项目地址与开源组件信息。
 
 ## 目录结构
 
@@ -90,11 +100,16 @@ BukaMusic/
 │   │   ├── FolderPickerActivity.java     # 内置文件管理器
 │   │   ├── LibraryActivity.java          # 曲库
 │   │   ├── SettingsActivity.java         # 设置
-│   │   └── AppsActivity.java             # 应用列表
+│   │   ├── TransferActivity.java         # 音乐传输（二维码 + 网页上传）
+│   │   ├── AboutActivity.java            # 关于
+│   │   ├── AppsActivity.java             # 应用列表
+│   │   └── BaseActivity.java             # 语言切换基类
+│   ├── transfer/                         # 内嵌 HTTP 传输服务与二维码生成
 │   ├── java/nz/co/iswe/android/airplay/  # AirPlay 引擎（GPL-3.0，源自 DroidAirPlay）
 │   ├── java/org/phlo/AirReceiver/        # RAOP 协议核心（GPL-3.0，源自 AirReceiver）
 │   ├── java/com/beatofthedrum/alacdecoder/# 纯 Java ALAC 解码器（BSD）
-│   └── res/                              # 布局、图标、字符串
+│   └── res/                              # 布局、图标、字符串（含 en/ja/ko 语言包）
+├── docs/logo.png                         # README 高清版软件 logo
 ├── app/build.gradle                      # 构建配置（含 release 签名）
 ├── build.gradle / settings.gradle / gradle/
 ├── LICENSE                               # GPL-3.0
@@ -132,19 +147,27 @@ $env:ANDROID_HOME = "你的 Android SDK 路径"
    - Android 11+：使用内置文件夹选择器时授予“所有文件访问权限”
      （选择器内可一键跳转授权）；
    - Android 13+：通知权限。
-2. 右上角设置：
+2. 右上角设置（无线连接 / 本地播放 / 界面 / 系统 / 关于）：
    - **设备名称**：iPhone/其他设备上看到的名称（默认使用系统设置内的设备名）；
+   - **音乐传输**：同一局域网内手机/电脑扫码或浏览器输入地址上传音乐；
    - **本地音乐路径**：内置文件管理器选择内部存储或 USB 中的音乐目录，
      不选则扫描系统媒体库；
    - **播放方式**：顺序 / 单曲循环 / 随机 / 文件夹内循环；
    - **自动播放**：启动后自动继续上次的本地音乐；
    - **声道平衡**：调节左右声道音量差，可一键恢复默认；
+   - **语言**：中文 / English / 日本語 / 한국어；
    - **设为桌面**：把本应用设为设备默认主页。
 3. 主界面左侧为专辑封面，右侧为歌曲信息与上一首 / 播放暂停 / 下一首。
 4. iPhone 下拉控制中心 → 隔空播放（AirPlay）→ 选择你的设备名即可投送；
    AirPlay 模式下同样可以用应用内的上一首 / 下一首 / 暂停遥控手机播放。
 5. 多房间：主控播放本地音乐 → 底栏多房间按钮 → 勾选其他设备 → 确认，
    所有设备同步播放；取消勾选断开，接收端也可主动断开。
+6. 曲库：长按歌曲进入多选，勾选后可批量删除文件；打开曲库时当前播放
+   歌曲自动滚动到列表顶部（排序不变）。
+
+音乐传输（网页上传）：打开 设置 → 无线连接 → 音乐传输，手机/电脑浏览器
+扫描二维码或输入页面显示的 IP:端口，选择音乐文件即可上传到本机曲库；
+网页支持多文件、进度条、格式过滤与四语显示，上传完成后曲库自动刷新。
 
 USB 音乐：U 盘插入后，在 设置 → 本地音乐路径 → 内置文件管理器 中选中 U 盘目录
 （选择器会单独列出 USB 存储卡）；拔插 U 盘会自动触发重新扫描。
@@ -172,7 +195,9 @@ USB 音乐：U 盘插入后，在 设置 → 本地音乐路径 → 内置文件
   [shairport-sync](https://github.com/mikebrady/shairport-sync)（MIT）的协议实现；
 - ALAC 解码器：Peter McQuillan / David Hammerton 的 Java 移植，BSD 3-Clause，
   见 `app/src/main/java/com/beatofthedrum/alacdecoder/license.txt`；
+- 二维码生成：[QR Code generator library](https://www.nayuki.io/page/qr-code-generator-library)
+  （Project Nayuki，MIT）；
 - 依赖：Netty 3（Apache-2.0）、JmDNS（Apache-2.0）、BouncyCastle（MIT 风格）、
-  AndroidX（Apache-2.0）。
+  AndroidX / Material Components（Apache-2.0）。
 
 本项目与 Apple Inc. 无关；“AirPlay”为 Apple 的商标，仅用于描述协议兼容性。

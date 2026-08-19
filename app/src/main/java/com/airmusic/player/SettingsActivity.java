@@ -26,7 +26,7 @@ import com.google.android.material.textfield.TextInputEditText;
 
 import java.io.File;
 
-public class SettingsActivity extends AppCompatActivity {
+public class SettingsActivity extends BaseActivity {
 
     private Prefs prefs;
     private TextInputEditText inputName;
@@ -143,7 +143,9 @@ public class SettingsActivity extends AppCompatActivity {
 
         setupSection(findViewById(R.id.section_airplay), findViewById(R.id.airplay_content));
         setupSection(findViewById(R.id.section_local), findViewById(R.id.local_content));
+        setupSection(findViewById(R.id.section_ui), findViewById(R.id.ui_content));
         setupSection(findViewById(R.id.section_system), findViewById(R.id.system_content));
+        setupSection(findViewById(R.id.section_about), findViewById(R.id.about_content));
         seekBalance.setProgress((int) ((prefs.getBalance() + 1f) * 100f));
         seekBalance.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -203,7 +205,12 @@ public class SettingsActivity extends AppCompatActivity {
         });
         findViewById(R.id.btn_equalizer).setOnClickListener(v ->
                 startActivity(new Intent(this, EqualizerActivity.class)));
+        findViewById(R.id.btn_transfer).setOnClickListener(v ->
+                startActivity(new Intent(this, TransferActivity.class)));
         findViewById(R.id.btn_export_logs).setOnClickListener(v -> exportLogs());
+        setupLanguageButton();
+        findViewById(R.id.btn_about).setOnClickListener(v ->
+                startActivity(new Intent(this, AboutActivity.class)));
     }
 
     @Override
@@ -254,6 +261,54 @@ public class SettingsActivity extends AppCompatActivity {
         } catch (Exception e) {
             Toast.makeText(this, R.string.export_logs_failed, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void setupLanguageButton() {
+        com.google.android.material.button.MaterialButton btnLanguage =
+                findViewById(R.id.btn_language);
+        updateLanguageLabel(btnLanguage);
+        btnLanguage.setOnClickListener(v -> {
+            String[] langs = {"zh", "en", "ja", "ko"};
+            String[] labels = {
+                    getString(R.string.language_zh),
+                    getString(R.string.language_en),
+                    getString(R.string.language_ja),
+                    getString(R.string.language_ko)
+            };
+            String current = prefs.getLanguage();
+            int checked = 0;
+            for (int i = 0; i < langs.length; i++) {
+                if (langs[i].equals(current)) checked = i;
+            }
+            new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle(R.string.language_dialog_title)
+                    .setSingleChoiceItems(labels, checked, (d, which) -> {
+                        prefs.setLanguage(langs[which]);
+                        PlaybackService service = PlaybackService.getInstance();
+                        if (service != null) {
+                            // The service may have been running since boot in
+                            // the old language; rebuild its UI strings now.
+                            service.applyUiLanguage();
+                        }
+                        d.dismiss();
+                        updateLanguageLabel(btnLanguage);
+                        // Recreate this screen and let the other activities
+                        // refresh themselves when they resume.
+                        recreate();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        });
+    }
+
+    private void updateLanguageLabel(com.google.android.material.button.MaterialButton btn) {
+        String lang = prefs.getLanguage();
+        String label;
+        if ("en".equals(lang)) label = getString(R.string.language_en);
+        else if ("ja".equals(lang)) label = getString(R.string.language_ja);
+        else if ("ko".equals(lang)) label = getString(R.string.language_ko);
+        else label = getString(R.string.language_zh);
+        btn.setText(label);
     }
 
     /** Shows the folder display name and path on one line when they are identical. */

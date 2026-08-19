@@ -65,6 +65,14 @@
             android:name=".EqualizerActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".TransferActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".AboutActivity"
+            android:exported="false" />
+
         <service
             android:name=".service.PlaybackService"
             android:exported="false"

@@ -27,7 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
 
-public class EqualizerActivity extends AppCompatActivity {
+public class EqualizerActivity extends BaseActivity {
 
     private static final String[] BAND_LABELS = {
             "31.5", "63", "125", "250", "500", "1K", "2K", "4K", "8K", "16K"
@@ -187,14 +187,14 @@ public class EqualizerActivity extends AppCompatActivity {
                 .show();
     }
 
-    /** Returns the next unused "预设N" name. */
+    /** Returns the next unused "预设N" name (localized). */
     private String nextPresetName() {
         java.util.List<String> names = prefs.getEqPresetNames();
         int n = 1;
-        while (names.contains("预设" + n)) {
+        while (names.contains(getString(R.string.equalizer_default_name, n))) {
             n++;
         }
-        return "预设" + n;
+        return getString(R.string.equalizer_default_name, n);
     }
 
     private void loadPreset() {
@@ -236,7 +236,7 @@ public class EqualizerActivity extends AppCompatActivity {
             w.flush();
             w.close();
         } catch (Throwable t) {
-            Toast.makeText(this, "导出失败", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.equalizer_export_failed, Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -251,7 +251,7 @@ public class EqualizerActivity extends AppCompatActivity {
             int n = prefs.importEqPresets(sb.toString());
             Toast.makeText(this, getString(R.string.equalizer_imported) + " (" + n + ")", Toast.LENGTH_SHORT).show();
         } catch (Throwable t) {
-            Toast.makeText(this, "导入失败", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.equalizer_import_failed, Toast.LENGTH_SHORT).show();
         }
     }
 

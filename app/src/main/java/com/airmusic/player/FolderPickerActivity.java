@@ -38,7 +38,7 @@ import java.util.Locale;
  * path. It browses internal storage and USB volumes directly via the
  * filesystem, so it works on devices that ship without a system file manager.
  */
-public class FolderPickerActivity extends AppCompatActivity {
+public class FolderPickerActivity extends BaseActivity {
 
     public static final String EXTRA_RESULT_PATH = "result_path";
     public static final String EXTRA_RESULT_DISPLAY = "result_display";

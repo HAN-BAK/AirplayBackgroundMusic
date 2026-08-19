@@ -8,6 +8,11 @@ import android.net.Uri;
  */
 public class Track {
 
+    /** Fallback values returned when a metadata field is missing. */
+    public static final String UNKNOWN_TITLE = "未知歌曲";
+    public static final String UNKNOWN_ARTIST = "未知歌手";
+    public static final String UNKNOWN_ALBUM = "未知专辑";
+
     public final Uri uri;
     public final String title;
     public final String artist;
@@ -30,15 +35,15 @@ public class Track {
     }
 
     public String displayTitle() {
-        return title == null || title.trim().length() == 0 ? "未知歌曲" : title;
+        return title == null || title.trim().length() == 0 ? UNKNOWN_TITLE : title;
     }
 
     public String displayArtist() {
-        return artist == null || artist.trim().length() == 0 ? "未知歌手" : artist;
+        return artist == null || artist.trim().length() == 0 ? UNKNOWN_ARTIST : artist;
     }
 
     public String displayAlbum() {
-        return album == null || album.trim().length() == 0 ? "未知专辑" : album;
+        return album == null || album.trim().length() == 0 ? UNKNOWN_ALBUM : album;
     }
 
     @Override

@@ -13,6 +13,7 @@ import android.util.Log;
 
 import androidx.documentfile.provider.DocumentFile;
 
+import com.airmusic.player.R;
 import com.airmusic.player.util.Prefs;
 
 import java.io.File;
@@ -76,10 +77,11 @@ public final class MusicLibrary {
             try {
                 tracks = scanInternal(appContext);
             } catch (SecurityException e) {
-                error = "没有存储权限，请先在设置中授权";
+                error = appContext.getString(R.string.library_no_permission);
                 Log.e(TAG, "scan failed", e);
             } catch (Exception e) {
-                error = "扫描失败：" + e.getMessage();
+                error = appContext.getString(R.string.library_scan_failed,
+                        e.getMessage() == null ? "" : e.getMessage());
                 Log.e(TAG, "scan failed", e);
             }
             final List<Track> result = tracks;

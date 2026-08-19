@@ -15,8 +15,12 @@ import com.airmusic.player.library.Track;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * Local music playback based on ExoPlayer, supporting sequence, repeat-one,
@@ -187,6 +191,76 @@ public class LocalPlayer {
     public synchronized Track getCurrentTrack() {
         if (currentIndex < 0 || currentIndex >= playlist.size()) return null;
         return playlist.get(currentIndex);
+    }
+
+    /**
+     * Removes the given tracks from the playlist and keeps the remaining
+     * order intact. If the currently playing track was removed, playback
+     * immediately switches to the next remaining track (or stops when the
+     * playlist becomes empty). {@code autoPlay} is true only while local
+     * mode owns the audio output, so a deletion never starts local audio
+     * underneath AirPlay or multi-room playback.
+     */
+    public synchronized void removeTracks(Set<Uri> removedUris, boolean autoPlay) {
+        if (removedUris == null || removedUris.isEmpty() || playlist.isEmpty()) return;
+        Map<Integer, Integer> oldToNew = new HashMap<>();
+        List<Track> newList = new ArrayList<>();
+        for (int i = 0; i < playlist.size(); i++) {
+            if (!removedUris.contains(playlist.get(i).uri)) {
+                oldToNew.put(i, newList.size());
+                newList.add(playlist.get(i));
+            }
+        }
+        if (newList.size() == playlist.size()) return; // nothing actually removed
+        List<Integer> newShuffle = new ArrayList<>();
+        for (int oldPos : shuffleOrder) {
+            Integer mapped = oldToNew.get(oldPos);
+            if (mapped != null) newShuffle.add(mapped);
+        }
+        Integer mappedCurrent = oldToNew.get(currentIndex);
+        boolean removedCurrent = mappedCurrent == null;
+        int newIndex = removedCurrent ? -1 : mappedCurrent;
+        if (removedCurrent && newList.isEmpty()) {
+            cancelSwitchFade();
+            playlist = newList;
+            shuffleOrder = newShuffle;
+            currentIndex = -1;
+            playing = false;
+            releasePlayer();
+            if (listener != null) listener.onLocalStateChanged(false);
+            return;
+        }
+        if (removedCurrent) {
+            // Continue with the next surviving track (wrap to the start when
+            // the deleted track was the last one).
+            if (newIndex < 0 || newIndex >= newList.size()) newIndex = 0;
+            cancelSwitchFade();
+            setMasterGain(1f);
+            playlist = newList;
+            shuffleOrder = newShuffle;
+            currentIndex = newIndex;
+            if (autoPlay && playing) {
+                setMasterGain(0f);
+                openCurrentTrack(0);
+                play();
+                fadeInFromZero();
+            } else {
+                releasePlayer();
+            }
+            if (listener != null) listener.onLocalTrackChanged(getCurrentTrack());
+        } else {
+            // The playing track survived: update the playlist without
+            // touching the audio. Only a pending target switch needs to be
+            // cancelled (its index may have shifted); a running fade-in can
+            // finish naturally.
+            if (fadeBusy && (pendingPlaylist != null || pendingIndex >= 0)) {
+                cancelSwitchFade();
+                setMasterGain(1f);
+            }
+            playlist = newList;
+            shuffleOrder = newShuffle;
+            currentIndex = newIndex;
+        }
     }
 
     public synchronized boolean isPlaying() {

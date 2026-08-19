@@ -57,6 +57,11 @@ import java.util.concurrent.Executors;
  */
 public class PlaybackService extends Service {
 
+    @Override
+    protected void attachBaseContext(android.content.Context newBase) {
+        super.attachBaseContext(com.airmusic.player.util.LocaleHelper.attach(newBase));
+    }
+
     private static final String TAG = "PlaybackService";
 
     public static final String ACTION_START = "com.airmusic.player.START";
@@ -366,7 +371,8 @@ public class PlaybackService extends Service {
             } else if (restoreAirPlay) {
                 if (multiRoomAudioPlayer != null) multiRoomAudioPlayer.stop();
                 // Restore the AirPlay metadata that was shown before.
-                state.title = airMetaTitle.length() > 0 ? airMetaTitle : "AirPlay 播放";
+                state.title = airMetaTitle.length() > 0 ? airMetaTitle
+                        : getString(R.string.source_airplay);
                 state.artist = airMetaArtist;
                 state.album = airMetaAlbum;
                 state.art = airMetaArt;
@@ -381,7 +387,7 @@ public class PlaybackService extends Service {
                 if (multiRoomAudioPlayer != null) multiRoomAudioPlayer.stop();
                 state.source = PlayerUiState.Source.IDLE;
                 state.playing = false;
-                state.title = "未在播放";
+                state.title = getString(R.string.source_idle);
                 state.artist = "";
                 state.album = "";
                 state.art = null;
@@ -786,7 +792,8 @@ public class PlaybackService extends Service {
         @Override
         public void onTargetsChanged(int count) {
             main.post(() -> {
-                state.statusText = count > 0 ? "多房间播放中 (" + count + " 台)" : "";
+                state.statusText = count > 0
+                        ? getString(R.string.playback_multicast_count, count) : "";
                 if (count > 0) {
                     // A receiver just connected while playback was already
                     // running: push the current track + state immediately.
@@ -870,6 +877,9 @@ public class PlaybackService extends Service {
 
         state = new PlayerUiState();
         state.mode = PlayMode.fromKey(prefs.getPlayMode());
+        state.title = getString(R.string.source_idle);
+        state.artist = "";
+        state.album = "";
         StateBus.get().postState(state);
 
         initMediaSession();
@@ -1038,11 +1048,39 @@ public class PlaybackService extends Service {
         return state.artist;
     }
 
+    /** Replaces the Chinese "unknown" fallback with the UI language's text. */
+    private String localizeTrackField(String value, String unknownConst, int fallbackRes) {
+        return unknownConst.equals(value) ? getString(fallbackRes) : value;
+    }
+
     /** Replaces the service playlist (used after a library rescan). */
     public void setTracks(List<Track> tracks) {
         this.tracks = tracks == null
                 ? new java.util.ArrayList<>()
                 : new java.util.ArrayList<>(tracks);
+    }
+
+    /**
+     * Removes deleted files from the playlist. If the currently playing
+     * local track was deleted, playback immediately switches to the next
+     * remaining track; while another source (AirPlay / multi-room) owns the
+     * output the replacement track is only queued, not auto-started.
+     */
+    public void removeDeletedTracks(List<Track> deleted) {
+        if (deleted == null || deleted.isEmpty()) return;
+        java.util.Set<android.net.Uri> uris = new java.util.HashSet<>();
+        for (Track t : deleted) {
+            if (t != null && t.uri != null) uris.add(t.uri);
+        }
+        if (uris.isEmpty()) return;
+        List<Track> filtered = new java.util.ArrayList<>();
+        for (Track t : tracks) {
+            if (t.uri == null || !uris.contains(t.uri)) filtered.add(t);
+        }
+        tracks = filtered;
+        if (localPlayer != null) {
+            localPlayer.removeTracks(uris, state.source == PlayerUiState.Source.LOCAL);
+        }
     }
 
     public void playTrack(Track track) {
@@ -1336,9 +1374,9 @@ public class PlaybackService extends Service {
 		}
         state.clientName = clientName == null || clientName.trim().length() == 0
                 ? prefs.getAirPlayName() : clientName.trim();
-        state.title = "AirPlay 播放";
+        state.title = getString(R.string.source_airplay);
         state.artist = state.clientName;
-        state.album = "来自发送设备";
+        state.album = getString(R.string.playback_from_sender);
         state.art = null;
         state.positionMs = 0;
 		state.durationMs = 0;
@@ -1437,7 +1475,7 @@ public class PlaybackService extends Service {
 				airPlayController.pauseReceiverOutput();
 				// Restore the multi-room metadata that was shown before AirPlay.
 				state.title = multiRoomMetaTitle.length() > 0
-						? multiRoomMetaTitle : "多房间播放";
+						? multiRoomMetaTitle : getString(R.string.source_remote);
 				state.artist = multiRoomMetaArtist;
 				state.album = multiRoomMetaAlbum;
 				state.art = multiRoomMetaArt;
@@ -1490,7 +1528,7 @@ public class PlaybackService extends Service {
         } else if (state.source == PlayerUiState.Source.AIRPLAY) {
             state.source = PlayerUiState.Source.IDLE;
             state.playing = false;
-            state.title = "未在播放";
+            state.title = getString(R.string.source_idle);
             state.artist = "";
             state.album = "";
             state.art = null;
@@ -1714,9 +1752,12 @@ public class PlaybackService extends Service {
         // Tap-time previews must keep the old cover until the switch.
         Track cur = localPlayer != null ? localPlayer.getCurrentTrack() : null;
         boolean isCurrent = cur != null && cur.equals(track);
-        state.title = track.displayTitle();
-        state.artist = track.displayArtist();
-        state.album = track.displayAlbum();
+        state.title = localizeTrackField(track.displayTitle(),
+                com.airmusic.player.library.Track.UNKNOWN_TITLE, R.string.unknown_title);
+        state.artist = localizeTrackField(track.displayArtist(),
+                com.airmusic.player.library.Track.UNKNOWN_ARTIST, R.string.unknown_artist);
+        state.album = localizeTrackField(track.displayAlbum(),
+                com.airmusic.player.library.Track.UNKNOWN_ALBUM, R.string.unknown_album);
         state.durationMs = (int) track.durationMs;
         if (isCurrent) {
             state.art = null;
@@ -2004,5 +2045,56 @@ public class PlaybackService extends Service {
         StateBus.get().postState(state);
         updateMediaSession();
         updateNotification();
+    }
+
+    /** Public wrapper used to refresh the UI/notification after a language change. */
+    public void publishState() {
+        publish();
+    }
+
+    /**
+     * Re-applies the selected UI language to the service resources (the
+     * service may have been started at boot in a different language) and
+     * rebuilds every user-visible state string from the current playback.
+     */
+    public void applyUiLanguage() {
+        try {
+            android.content.res.Configuration config =
+                    new android.content.res.Configuration(getResources().getConfiguration());
+            config.setLocale(com.airmusic.player.util.LocaleHelper.toLocale(
+                    new Prefs(this).getLanguage()));
+            getResources().updateConfiguration(config, getResources().getDisplayMetrics());
+        } catch (Throwable ignored) {
+        }
+        if (state.source == PlayerUiState.Source.LOCAL) {
+            Track cur = localPlayer != null ? localPlayer.getCurrentTrack() : null;
+            if (cur != null) {
+                state.title = localizeTrackField(cur.displayTitle(),
+                        com.airmusic.player.library.Track.UNKNOWN_TITLE, R.string.unknown_title);
+                state.artist = localizeTrackField(cur.displayArtist(),
+                        com.airmusic.player.library.Track.UNKNOWN_ARTIST, R.string.unknown_artist);
+                state.album = localizeTrackField(cur.displayAlbum(),
+                        com.airmusic.player.library.Track.UNKNOWN_ALBUM, R.string.unknown_album);
+            }
+        } else if (state.source == PlayerUiState.Source.AIRPLAY) {
+            state.title = airMetaTitle.length() > 0 ? airMetaTitle
+                    : getString(R.string.source_airplay);
+            state.artist = airMetaArtist.length() > 0 ? airMetaArtist : state.clientName;
+            state.album = airMetaAlbum.length() > 0 ? airMetaAlbum
+                    : getString(R.string.playback_from_sender);
+        } else if (state.source == PlayerUiState.Source.REMOTE) {
+            state.title = multiRoomMetaTitle.length() > 0
+                    ? multiRoomMetaTitle : getString(R.string.source_remote);
+            state.artist = multiRoomMetaArtist;
+            state.album = multiRoomMetaAlbum;
+        } else {
+            state.title = getString(R.string.source_idle);
+            state.artist = "";
+            state.album = "";
+        }
+        int count = multiRoomManager != null ? multiRoomManager.targetCount() : 0;
+        state.statusText = count > 0
+                ? getString(R.string.playback_multicast_count, count) : "";
+        publish();
     }
 }

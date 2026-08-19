@@ -100,6 +100,14 @@
                     android:text="@string/pref_wifi_settings"
                     style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_transfer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/transfer"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
             </LinearLayout>
 
             <!-- ============ 本地播放 ============ -->
@@ -289,6 +297,64 @@
                     style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
             </LinearLayout>
 
+            <!-- ============ 界面 ============ -->
+            <TextView
+                android:id="@+id/section_ui"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="?attr/selectableItemBackground"
+                android:padding="10dp"
+                android:text="@string/settings_section_ui"
+                android:textColor="@color/accent"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/ui_content"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <Switch
+                    android:id="@+id/switch_show_apps"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/pref_show_apps_button"
+                    android:textColor="@color/text_primary"
+                    android:textSize="15sp"
+                    android:thumbTint="@color/accent"
+                    android:trackTint="@color/surface_light" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/pref_language"
+                        android:textColor="@color/text_primary"
+                        android:textSize="15sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_language"
+                        style="@style/Widget.MaterialComponents.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:minHeight="36dp"
+                        android:textColor="@color/accent" />
+                </LinearLayout>
+            </LinearLayout>
+
             <!-- ============ 系统 ============ -->
             <TextView
                 android:id="@+id/section_system"
@@ -307,17 +373,6 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
-
-                <Switch
-                    android:id="@+id/switch_show_apps"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/pref_show_apps_button"
-                    android:textColor="@color/text_primary"
-                    android:textSize="15sp"
-                    android:thumbTint="@color/accent"
-                    android:trackTint="@color/surface_light" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btn_set_home"
@@ -361,6 +416,34 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:text="@string/export_logs"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+            </LinearLayout>
+
+            <!-- ============ 关于 ============ -->
+            <TextView
+                android:id="@+id/section_about"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="?attr/selectableItemBackground"
+                android:padding="10dp"
+                android:text="@string/settings_section_about"
+                android:textColor="@color/accent"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/about_content"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_about"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/about_title"
                     style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
             </LinearLayout>
 

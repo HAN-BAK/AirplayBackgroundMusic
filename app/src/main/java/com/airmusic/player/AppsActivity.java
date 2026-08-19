@@ -25,7 +25,7 @@ import java.util.Locale;
  * Lists all launchable apps on the device; tapping one opens it, like the
  * device launcher.
  */
-public class AppsActivity extends AppCompatActivity {
+public class AppsActivity extends BaseActivity {
 
     private final AppsAdapter adapter = new AppsAdapter();
 
@@ -44,7 +44,8 @@ public class AppsActivity extends AppCompatActivity {
             try {
                 startActivity(app.launchIntent);
             } catch (Exception e) {
-                Toast.makeText(this, "无法打开：" + app.label, Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.apps_open_failed, app.label),
+                        Toast.LENGTH_SHORT).show();
             }
         });
 
