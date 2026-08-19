@@ -21,6 +21,11 @@
     <string name="transfer_server_failed">Failed to start the service. Please check the network connection.</string>
     <string name="transfer_server_started">Transfer service running. Waiting for uploads…</string>
     <string name="transfer_qr_failed">QR code generation failed: %1$s</string>
+    <string name="transfer_no_network">Not connected to a network. Please connect to Wi-Fi.</string>
+    <string name="connect_wifi">Connect to Wi-Fi</string>
+    <string name="storage_title">Music Library Disk Space</string>
+    <string name="storage_info">Total %1$s, Free %2$s</string>
+    <string name="storage_low_warning">Less than 80 MB of free space. Please free up space before trying again.</string>
     <string name="library_no_permission">No storage permission. Please grant it in Settings first.</string>
     <string name="library_scan_failed">Scan failed: %1$s</string>
     <string name="transfer_address">On the same LAN, open this address in a browser:</string>

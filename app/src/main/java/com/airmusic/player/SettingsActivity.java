@@ -22,6 +22,7 @@ import androidx.core.content.FileProvider;
 import com.airmusic.player.service.PlaybackService;
 import com.airmusic.player.util.DiagnosticLog;
 import com.airmusic.player.util.Prefs;
+import com.airmusic.player.util.StorageHelper;
 import com.google.android.material.textfield.TextInputEditText;
 
 import java.io.File;
@@ -36,6 +37,8 @@ public class SettingsActivity extends BaseActivity {
     private Switch switchShowApps;
     private SeekBar seekBalance;
     private TextView airplayStatus;
+    private TextView txtStorageInfo;
+    private com.google.android.material.button.MaterialButton btnTransfer;
     private View btnEqualizer;
 
     private final ActivityResultLauncher<Intent> folderPicker =
@@ -68,6 +71,8 @@ public class SettingsActivity extends BaseActivity {
         switchShowApps = findViewById(R.id.switch_show_apps);
         seekBalance = findViewById(R.id.seek_balance);
         airplayStatus = findViewById(R.id.airplay_status);
+        txtStorageInfo = findViewById(R.id.txt_storage_info);
+        btnTransfer = findViewById(R.id.btn_transfer);
         btnEqualizer = findViewById(R.id.btn_equalizer);
 
         inputName.setText(prefs.getAirPlayName());
@@ -205,22 +210,41 @@ public class SettingsActivity extends BaseActivity {
         });
         findViewById(R.id.btn_equalizer).setOnClickListener(v ->
                 startActivity(new Intent(this, EqualizerActivity.class)));
-        findViewById(R.id.btn_transfer).setOnClickListener(v ->
-                startActivity(new Intent(this, TransferActivity.class)));
+        btnTransfer.setOnClickListener(v -> {
+            // Low disk space: refuse to open the transfer page.
+            if (!StorageHelper.hasEnoughSpace(prefs.getMusicFolderPath(), 0)) {
+                Toast.makeText(this, R.string.storage_low_warning, Toast.LENGTH_LONG).show();
+                return;
+            }
+            startActivity(new Intent(this, TransferActivity.class));
+        });
         findViewById(R.id.btn_export_logs).setOnClickListener(v -> exportLogs());
         setupLanguageButton();
         findViewById(R.id.btn_about).setOnClickListener(v ->
                 startActivity(new Intent(this, AboutActivity.class)));
+        refreshStorageInfo();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         refreshAirPlayStatus();
+        refreshStorageInfo();
         // The equalizer now uses a dedicated instance for the multi-room
         // output, so it can stay enabled while multi-room is active.
         btnEqualizer.setEnabled(true);
         btnEqualizer.setAlpha(1f);
+    }
+
+    private void refreshStorageInfo() {
+        String folder = prefs.getMusicFolderPath();
+        long total = StorageHelper.getTotalBytes(folder);
+        long usable = StorageHelper.getUsableBytes(folder);
+        txtStorageInfo.setText(getString(R.string.storage_info,
+                StorageHelper.formatSize(total), StorageHelper.formatSize(usable)));
+        boolean enough = StorageHelper.hasEnoughSpace(folder, 0);
+        btnTransfer.setAlpha(enough ? 1f : 0.45f);
+        btnTransfer.setClickable(true);
     }
 
     /** Makes a section header expand/collapse its content. */

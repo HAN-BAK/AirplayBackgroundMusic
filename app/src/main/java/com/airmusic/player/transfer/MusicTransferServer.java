@@ -183,6 +183,17 @@ public final class MusicTransferServer {
             if (listener != null) listener.onUploaded(cleanName, false, msg);
             return;
         }
+        // Refuse the upload when the music disk would drop below 80 MB free.
+        long usable = dir.getUsableSpace();
+        if (usable - com.airmusic.player.util.StorageHelper.MIN_FREE_BYTES < body.length) {
+            String msg = t(language, "上传后剩余空间将不足80MB，已取消上传",
+                    "Uploading this file would leave less than 80 MB free; upload cancelled.",
+                    "このファイルをアップロードすると空き容量が80MB未満になるため、アップロードをキャンセルしました",
+                    "이 파일을 업로드하면 남은 공간이 80MB 미만이 되어 업로드가 취소되었습니다");
+            sendJson(out, 507, "ERR:" + msg);
+            if (listener != null) listener.onUploaded(cleanName, false, msg);
+            return;
+        }
         File target = new File(dir, cleanName);
         // Same-name files overwrite the existing file.
         try (FileOutputStream fos = new FileOutputStream(target)) {

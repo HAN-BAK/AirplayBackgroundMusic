@@ -21,6 +21,11 @@
     <string name="transfer_server_failed">サービスの起動に失敗しました。ネットワーク接続を確認してください。</string>
     <string name="transfer_server_started">転送サービスが起動しました。アップロード待機中…</string>
     <string name="transfer_qr_failed">QRコードの生成に失敗しました：%1$s</string>
+    <string name="transfer_no_network">ネットワークに接続されていません。Wi-Fiに接続してください。</string>
+    <string name="connect_wifi">Wi-Fiに接続</string>
+    <string name="storage_title">音楽ライブラリのディスク容量</string>
+    <string name="storage_info">総容量 %1$s、空き %2$s</string>
+    <string name="storage_low_warning">空き容量が80MB未満です。容量を空けてからお試しください。</string>
     <string name="library_no_permission">ストレージ権限がありません。設定で権限を許可してください。</string>
     <string name="library_scan_failed">スキャンに失敗しました：%1$s</string>
     <string name="transfer_address">同じLAN内で、ブラウザに次のアドレスを入力してください：</string>

@@ -1,10 +1,12 @@
 package com.airmusic.player;
 
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -51,6 +53,8 @@ public class TransferActivity extends BaseActivity {
         TextView txtStatus = findViewById(R.id.txt_status);
         TextView txtFormats = findViewById(R.id.txt_formats);
         ImageView imgQr = findViewById(R.id.img_qr);
+        com.google.android.material.button.MaterialButton btnWifi =
+                findViewById(R.id.btn_connect_wifi);
 
         txtFormats.setText(getString(R.string.transfer_supported, AudioExt.supportedList()));
 
@@ -65,9 +69,22 @@ public class TransferActivity extends BaseActivity {
                 }));
 
         int port = server.start();
-        String ip = getWifiIpv4();
+        String ip = getLocalIpv4();
         if (port <= 0 || ip == null || ip.isEmpty()) {
-            txtStatus.setText(R.string.transfer_server_failed);
+            // No usable LAN address (Wi-Fi / network not connected): offer a
+            // shortcut to the system Wi-Fi settings instead of failing.
+            txtStatus.setText(R.string.transfer_no_network);
+            txtAddress.setVisibility(android.view.View.GONE);
+            imgQr.setVisibility(android.view.View.GONE);
+            btnWifi.setVisibility(android.view.View.VISIBLE);
+            btnWifi.setOnClickListener(v -> {
+                try {
+                    startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+                } catch (Exception e) {
+                    Toast.makeText(this, R.string.home_settings_unavailable,
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
             return;
         }
         String url = "http://" + ip + ":" + port + "/";
@@ -115,7 +132,7 @@ public class TransferActivity extends BaseActivity {
         }
     }
 
-    private String getWifiIpv4() {
+    private String getLocalIpv4() {
         try {
             for (NetworkInterface nif : Collections.list(NetworkInterface.getNetworkInterfaces())) {
                 if (!nif.isUp() || nif.isLoopback()) continue;

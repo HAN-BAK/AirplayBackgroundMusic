@@ -21,6 +21,11 @@
     <string name="transfer_server_failed">服务启动失败，请检查网络连接</string>
     <string name="transfer_server_started">传输服务已启动，等待上传…</string>
     <string name="transfer_qr_failed">二维码生成失败：%1$s</string>
+    <string name="transfer_no_network">未连接网络，请先连接 WiFi</string>
+    <string name="connect_wifi">连接 WiFi</string>
+    <string name="storage_title">音乐库磁盘空间</string>
+    <string name="storage_info">总空间 %1$s，剩余 %2$s</string>
+    <string name="storage_low_warning">存储空间小于80MB，请清理歌曲后再试</string>
     <string name="library_no_permission">没有存储权限，请先在设置中授权</string>
     <string name="library_scan_failed">扫描失败：%1$s</string>
     <string name="transfer_address">同一局域网内，手机/电脑浏览器输入：</string>

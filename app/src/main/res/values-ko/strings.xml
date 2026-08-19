@@ -21,6 +21,11 @@
     <string name="transfer_server_failed">서비스를 시작하지 못했습니다. 네트워크 연결을 확인하세요.</string>
     <string name="transfer_server_started">전송 서비스가 시작되었습니다. 업로드 대기 중…</string>
     <string name="transfer_qr_failed">QR 코드 생성 실패: %1$s</string>
+    <string name="transfer_no_network">네트워크에 연결되지 않았습니다. Wi-Fi에 연결하세요.</string>
+    <string name="connect_wifi">Wi-Fi 연결</string>
+    <string name="storage_title">음악 라이브러리 디스크 공간</string>
+    <string name="storage_info">전체 %1$s, 남은 공간 %2$s</string>
+    <string name="storage_low_warning">남은 공간이 80MB 미만입니다. 공간을 확보한 후 다시 시도하세요.</string>
     <string name="library_no_permission">저장소 권한이 없습니다. 설정에서 권한을 허용해 주세요.</string>
     <string name="library_scan_failed">스캔 실패: %1$s</string>
     <string name="transfer_address">같은 LAN에서 브라우저에 다음 주소를 입력하세요:</string>
