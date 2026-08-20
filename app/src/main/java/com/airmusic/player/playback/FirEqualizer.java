@@ -28,12 +28,20 @@ public final class FirEqualizer {
      * block and applies a stereo-linked gain reduction with a fast attack
      * and slow release, so loud peaks are tamed without reshaping the wave.
      */
-    private static final double LIMIT_THRESHOLD = 30000.0;
-    /** ~1.45 ms of lookahead at 44.1 kHz. */
-    private static final int LOOKAHEAD = 64;
+    /**
+     * Engage point at full scale. Mastered music already reaches ~-0.1 dBFS
+     * (about 32700), so a lower threshold made the limiter act on the source
+     * itself and pump on every loud passage even with a flat EQ. At full
+     * scale the limiter only steps in when the EQ actually pushes peaks
+     * beyond 0 dBFS.
+     */
+    private static final double LIMIT_THRESHOLD = 32767.0;
+    /** ~5.8 ms of lookahead at 44.1 kHz: enough for the gain to settle
+     *  before a transient reaches the output, so peaks never overshoot. */
+    private static final int LOOKAHEAD = 256;
     /** Gain-reduction time constants (seconds). */
-    private static final double ATTACK_TAU_S = 0.0006;
-    private static final double RELEASE_TAU_S = 0.18;
+    private static final double ATTACK_TAU_S = 0.0003;
+    private static final double RELEASE_TAU_S = 0.25;
     private static final double PI = Math.PI;
 
     /** Per-band biquad coefficients: b0, b1, b2, a1, a2 (already divided by a0). */
@@ -48,6 +56,14 @@ public final class FirEqualizer {
     private double limitGain = 1.0;
     private double attackCoef = 1.0;
     private double releaseCoef = 1.0;
+    /**
+     * Makeup gain (linear, &lt;= 1). A curve with several boosts pushes the
+     * whole band up and forces the limiter to ride the gain on loud masters
+     * (audible as pumping/dirt). We attenuate the output by the curve's
+     * average boost so the EQ shapes the tone without constantly exceeding
+     * full scale; the limiter then only catches genuine peaks.
+     */
+    private double makeupGain = 1.0;
 
     private int sampleRate = 44100;
     private boolean bypass;
@@ -129,7 +145,51 @@ public final class FirEqualizer {
             coeff[b][4] = (1.0 - alpha / a) / a0;
         }
         bypass = isFlat(gains);
+        makeupGain = computeMakeupGain();
+        Log.i("FirEqualizer", "makeup=" + String.format(java.util.Locale.US, "%.3f",
+                makeupGain));
         clearHistory();
+    }
+
+    /**
+     * Estimates the average magnitude of the cascade over 20 Hz..20 kHz and
+     * returns the attenuation that keeps the boosted output near unity.
+     */
+    private double computeMakeupGain() {
+        if (bypass) return 1.0;
+        double maxF = Math.min(20000.0, sampleRate / 2.0 * 0.95);
+        int points = 200;
+        double sumDb = 0.0;
+        for (int i = 0; i < points; i++) {
+            double f = 20.0 * Math.pow(maxF / 20.0, i / (double) (points - 1));
+            double w = 2.0 * PI * f / sampleRate;
+            double re = 1.0;
+            double im = 0.0;
+            for (int b = 0; b < BANDS; b++) {
+                double[] c = coeff[b];
+                double cw = Math.cos(w);
+                double sw = Math.sin(w);
+                double c2w = Math.cos(2.0 * w);
+                double s2w = Math.sin(2.0 * w);
+                double br = c[0] + c[1] * cw + c[2] * c2w;
+                double bi = c[1] * sw + c[2] * s2w;
+                double ar = 1.0 + c[3] * cw + c[4] * c2w;
+                double ai = c[3] * sw + c[4] * s2w;
+                double den = ar * ar + ai * ai;
+                double num = br * br + bi * bi;
+                double rr = (br * ar + bi * ai) / den;
+                double ri = (bi * ar - br * ai) / den;
+                double nre = re * rr - im * ri;
+                double nim = re * ri + im * rr;
+                re = nre;
+                im = nim;
+            }
+            sumDb += 20.0 * Math.log10(Math.hypot(re, im) + 1e-12);
+        }
+        double avgDb = sumDb / points;
+        double makeupDb = -Math.max(0.0, avgDb);
+        makeupDb = Math.max(-12.0, Math.min(0.0, makeupDb));
+        return Math.pow(10.0, makeupDb / 20.0);
     }
 
     private void updateLimiterTimeConstants() {
@@ -162,6 +222,8 @@ public final class FirEqualizer {
             } else {
                 r = l;
             }
+            l *= makeupGain;
+            r *= makeupGain;
             // Push into the lookahead delay line, then read the oldest
             // sample and apply the gain computed from the incoming peak.
             delayL[delayPos] = l;
