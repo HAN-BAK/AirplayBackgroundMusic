@@ -72,7 +72,7 @@
     <string name="about_project">Project</string>
     <string name="about_project_value">https://github.com/HAN-BAK/BukaMusic</string>
     <string name="about_open_source">Open Source</string>
-    <string name="about_open_source_hint">This app uses the following open-source components. Tap to view:</string>
+    <string name="about_open_source_hint">This app uses the following open-source components:</string>
     <string name="os_airreceiver">AirReceiver / DroidAirPlay (GPL-3.0) · AirPlay receiver engine</string>
     <string name="os_exoplayer">ExoPlayer / AndroidX Media3 (Apache-2.0) · Local audio playback</string>
     <string name="os_jmdns">JmDNS (Apache-2.0) · LAN service discovery</string>

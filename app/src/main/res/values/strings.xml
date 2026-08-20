@@ -72,7 +72,7 @@
     <string name="about_project">项目地址</string>
     <string name="about_project_value">https://github.com/HAN-BAK/BukaMusic</string>
     <string name="about_open_source">开源项目</string>
-    <string name="about_open_source_hint">本项目使用了以下开源组件，点击可查看项目：</string>
+    <string name="about_open_source_hint">本项目使用了以下开源组件：</string>
     <string name="os_airreceiver">AirReceiver / DroidAirPlay（GPL-3.0）· AirPlay 接收引擎</string>
     <string name="os_exoplayer">ExoPlayer / AndroidX Media3（Apache-2.0）· 本地音频播放</string>
     <string name="os_jmdns">JmDNS（Apache-2.0）· 局域网服务发现</string>
