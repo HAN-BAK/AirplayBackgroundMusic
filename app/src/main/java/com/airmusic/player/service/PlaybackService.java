@@ -492,6 +492,10 @@ public class PlaybackService extends Service {
             cancelFade();
             localFade = 0f;
             localPlayer.setMasterGain(0f);
+            // The muted ExoPlayer is only the session brain while the
+            // streamer owns the audible output; skip its equalizer so the
+            // box CPU is free for the multi-room playback thread.
+            equalizer.setForcedBypass(true);
             MultiRoomAudioPlayer localOut = getMultiRoomAudioPlayer();
             localOut.setBalance(prefs.getBalance());
             localOut.resetForStream();
@@ -1594,6 +1598,9 @@ public class PlaybackService extends Service {
 			localPlayer.setMasterGain(0f);
 			return;
 		}
+		// The ExoPlayer is taking over the audible output again: re-enable
+		// its equalizer (bypassed while the multi-room stream owned audio).
+		equalizer.setForcedBypass(false);
 		cancelFade();
 		localFade = 0f;
 		final long stepMs = 25;

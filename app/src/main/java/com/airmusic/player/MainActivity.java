@@ -28,6 +28,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
 import com.airmusic.player.multicast.MultiRoomDiscovery;
+import com.airmusic.player.multicast.MultiRoomAudioPlayer;
 import com.airmusic.player.multicast.MultiRoomManager;
 import com.airmusic.player.playback.EqAudioProcessor;
 import com.airmusic.player.service.PlaybackService;
@@ -294,10 +295,12 @@ public class MainActivity extends BaseActivity {
             if (dir != null) {
                 EqAudioProcessor.startCapture(new File(dir, "eq_capture.pcm"));
                 AudioOutputQueue.startCapture(new File(dir, "eq_capture_airplay.pcm"));
+                MultiRoomAudioPlayer.startCapture(new File(dir, "mr_capture.pcm"));
             }
         } else if (ACTION_CAPTURE_STOP.equals(action)) {
             EqAudioProcessor.stopCapture();
             AudioOutputQueue.stopCapture();
+            MultiRoomAudioPlayer.stopCapture();
         }
     }
 

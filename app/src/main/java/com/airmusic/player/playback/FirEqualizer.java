@@ -52,8 +52,19 @@ public final class FirEqualizer {
     /** Lookahead delay lines (post-EQ samples before the limiter). */
     private final double[] delayL = new double[LOOKAHEAD];
     private final double[] delayR = new double[LOOKAHEAD];
+    /** Monotonic-deque peak tracker over the lookahead window (O(1) per
+     *  sample instead of re-scanning all LOOKAHEAD slots). */
+    private final int[] dqPos = new int[LOOKAHEAD + 1];
+    private final double[] dqVal = new double[LOOKAHEAD + 1];
+    private final boolean[] dqLive = new boolean[LOOKAHEAD];
+    private int dqHead;
+    private int dqTail;
     private int delayPos;
     private double limitGain = 1.0;
+    /** Per-log-window limiter statistics (pumping diagnostics). */
+    private double windowMinLimitGain = 1.0;
+    private long windowLimitHits;
+    private long windowSamples;
     private double attackCoef = 1.0;
     private double releaseCoef = 1.0;
     /**
@@ -67,6 +78,9 @@ public final class FirEqualizer {
 
     private int sampleRate = 44100;
     private boolean bypass;
+    /** Hard bypass for a path whose output nobody hears (e.g. the muted
+     *  ExoPlayer while multi-room streaming owns the output). */
+    private volatile boolean forcedBypass;
     private double[] gains;
     // Lightweight processing-cost instrumentation (for debugging stutter).
     private long lastTimingLogMs;
@@ -106,10 +120,24 @@ public final class FirEqualizer {
             stateR[b][0] = stateR[b][1] = stateR[b][2] = stateR[b][3] = 0.0;
         }
         delayPos = 0;
+        dqHead = 0;
+        dqTail = 0;
+        for (int i = 0; i < LOOKAHEAD; i++) {
+            dqLive[i] = false;
+        }
         limitGain = 1.0;
         for (int i = 0; i < LOOKAHEAD; i++) {
             delayL[i] = 0.0;
             delayR[i] = 0.0;
+        }
+    }
+
+    /** Bypasses all processing (filters + limiter) until cleared. */
+    public synchronized void setForcedBypass(boolean bypass) {
+        if (forcedBypass == bypass) return;
+        forcedBypass = bypass;
+        if (bypass) {
+            clearHistory();
         }
     }
 
@@ -204,7 +232,7 @@ public final class FirEqualizer {
 
     /** Applies the equalizer to the first {@code length} bytes of PCM. */
     public synchronized void process(byte[] pcm, int length, int channels) {
-        if (bypass || pcm == null || length <= 0) return;
+        if (bypass || forcedBypass || pcm == null || length <= 0) return;
         if (channels < 1 || channels > 2) return;
         int frames = length / 2 / channels;
         if (frames <= 0) return;
@@ -224,24 +252,43 @@ public final class FirEqualizer {
             }
             l *= makeupGain;
             r *= makeupGain;
-            // Push into the lookahead delay line, then read the oldest
-            // sample and apply the gain computed from the incoming peak.
+            // Push into the lookahead delay line. The window peak is kept
+            // with a monotonic deque (positions are ring slots; a stale
+            // entry for the slot being overwritten can only sit at the
+            // front, because any smaller successor would have popped it).
             delayL[delayPos] = l;
             delayR[delayPos] = r;
-            delayPos = (delayPos + 1) % LOOKAHEAD;
-            double peak = 0.0;
-            for (int i = 0; i < LOOKAHEAD; i++) {
-                double p = Math.abs(delayL[i]);
-                if (p > peak) peak = p;
-                p = Math.abs(delayR[i]);
-                if (p > peak) peak = p;
+            double pk = Math.max(Math.abs(l), Math.abs(r));
+            if (dqLive[delayPos]) {
+                // The old entry for this ring slot is now stale.
+                dqLive[dqPos[dqHead % (LOOKAHEAD + 1)]] = false;
+                dqHead++;
             }
+            while (dqTail > dqHead) {
+                int bi = (dqTail - 1) % (LOOKAHEAD + 1);
+                if (dqVal[bi] <= pk) {
+                    dqLive[dqPos[bi]] = false;
+                    dqTail--;
+                } else {
+                    break;
+                }
+            }
+            int ti = dqTail % (LOOKAHEAD + 1);
+            dqPos[ti] = delayPos;
+            dqVal[ti] = pk;
+            dqLive[delayPos] = true;
+            dqTail++;
+            delayPos = (delayPos + 1) % LOOKAHEAD;
+            double peak = dqVal[dqHead % (LOOKAHEAD + 1)];
             double target = peak > LIMIT_THRESHOLD ? LIMIT_THRESHOLD / peak : 1.0;
+            windowSamples++;
+            if (target < 1.0) windowLimitHits++;
             if (target < limitGain) {
                 limitGain += (target - limitGain) * attackCoef;
             } else {
                 limitGain += (target - limitGain) * releaseCoef;
             }
+            if (limitGain < windowMinLimitGain) windowMinLimitGain = limitGain;
             double outL = delayL[delayPos] * limitGain;
             double outR = delayR[delayPos] * limitGain;
             short sl = (short) Math.max(-32768, Math.min(32767, Math.round(outL)));
@@ -280,9 +327,18 @@ public final class FirEqualizer {
             Log.i("FirEqualizer", "avg_ms=" + String.format(java.util.Locale.US, "%.3f",
                     procNanos / 1e6 / Math.max(1, procCalls))
                     + " calls=" + procCalls + " frames=" + frames
-                    + " rate=" + sampleRate + " bypass=" + bypass);
+                    + " rate=" + sampleRate + " bypass=" + bypass
+                    + " min_gain=" + String.format(java.util.Locale.US, "%.3f",
+                    windowMinLimitGain)
+                    + " limit_hits=" + (windowSamples > 0
+                    ? String.format(java.util.Locale.US, "%.1f",
+                    100.0 * windowLimitHits / windowSamples) : "0")
+                    + "%");
             procNanos = 0;
             procCalls = 0;
+            windowMinLimitGain = 1.0;
+            windowLimitHits = 0;
+            windowSamples = 0;
             lastTimingLogMs = now;
         }
     }

@@ -8,6 +8,8 @@ import android.media.AudioTrack;
 import android.os.Build;
 import android.util.Log;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Locale;
@@ -38,6 +40,57 @@ public class MultiRoomAudioPlayer {
 
     private static final String TAG = "MultiRoomAudioPlayer";
 
+    /** Debug hook: raw post-EQ 16-bit PCM capture (master loopback or
+     *  receiver output), toggled via the same adb capture intents used by
+     *  the local/AirPlay capture hooks. */
+    private static FileOutputStream captureStream;
+    private static long captureWritten;
+    private static final long CAPTURE_LIMIT = 400L * 1024 * 1024;
+
+    public static synchronized void startCapture(File file) {
+        stopCapture();
+        try {
+            captureStream = new FileOutputStream(file);
+            captureWritten = 0;
+            Log.i(TAG, "capture started: " + file);
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static synchronized void stopCapture() {
+        if (captureStream != null) {
+            try {
+                captureStream.flush();
+                captureStream.close();
+            } catch (Exception ignored) {
+            }
+            captureStream = null;
+            Log.i(TAG, "capture stopped, bytes=" + captureWritten);
+        }
+    }
+
+    private void writeCapture(byte[] data, int len) {
+        FileOutputStream out;
+        synchronized (MultiRoomAudioPlayer.class) {
+            out = captureStream;
+            if (out == null) return;
+            if (captureWritten + len > CAPTURE_LIMIT) {
+                captureStream = null;
+                try {
+                    out.close();
+                } catch (Exception ignored) {
+                }
+                return;
+            }
+            captureWritten += len;
+        }
+        try {
+            out.write(data, 0, len);
+        } catch (Exception ignored) {
+            stopCapture();
+        }
+    }
+
     private static final int MAX_BUFFER_MS = 2000;
     /** Initial software buffer before playback starts (absorbs jitter). */
     private static final int LEAD_MS = 250;
@@ -48,6 +101,14 @@ public class MultiRoomAudioPlayer {
      * leaves the resampler room to speed up or slow down without starving.
      */
     private static final int WRITE_LEAD_MS = 250;
+    /**
+     * Master-loopback target lead. The master's own streamer paces chunks at
+     * real time, so the loopback player's written position can only sit a
+     * small queue (about one chunk) behind the stream; the receiver-style
+     * WRITE_LEAD_MS + latencyComp targets (~400 ms) are unreachable and made
+     * the controller pin ratio at the floor and hard-resync in a loop.
+     */
+    private static final int MASTER_LEAD_MS = 100;
     /** P gain: ratio shift per ms of playhead error. */
     private static final double KP = 0.00006;
     /** I gain applied to the accumulated error. */
@@ -55,6 +116,15 @@ public class MultiRoomAudioPlayer {
     /** Resample ratio bounds (slightly wider for quicker initial lock-in). */
     private static final double RATIO_MIN = 0.99;
     private static final double RATIO_MAX = 1.01;
+    /**
+     * Low-pass for ratio changes. The controller computes a new target every
+     * chunk (100 ms); applying it instantly makes the resample rate jump per
+     * chunk, warping the audio (audible as distortion/wow). Smoothing spreads
+     * the correction over a few seconds so the content rate stays stable.
+     */
+    private static final double RATIO_SMOOTH = 0.02;
+    /** Ratios this close to 1.0 are a pure passthrough (no interpolation). */
+    private static final double RATIO_PASSTHROUGH_EPS = 0.0002;
     private static final double INTEGRAL_CLAMP_MS = 400.0;
     /** If the playhead drifts beyond this from the schedule, hard re-sync. */
     private static final long HARD_RESYNC_MS = 350;
@@ -70,6 +140,8 @@ public class MultiRoomAudioPlayer {
     private volatile boolean started;
     private volatile int sampleRate = 44100;
     private volatile int channels = 2;
+    /** True while this instance is the master's loopback (not a receiver). */
+    private volatile boolean masterLoopback;
 
     // Clock anchor (written on the main thread, read by the writer thread).
     private volatile long anchorPosMs = -1;
@@ -148,6 +220,12 @@ public class MultiRoomAudioPlayer {
     public void setFormat(int sampleRate, int channels) {
         this.sampleRate = sampleRate > 0 ? sampleRate : this.sampleRate;
         this.channels = channels > 0 ? channels : this.channels;
+        synchronized (MultiRoomAudioPlayer.class) {
+            if (captureStream != null) {
+                Log.i(TAG, "capture format sr=" + this.sampleRate
+                        + " ch=" + this.channels);
+            }
+        }
         resetForStream();
     }
 
@@ -156,6 +234,7 @@ public class MultiRoomAudioPlayer {
         anchorPosMs = startPosMs;
         anchorLocalWallMs = startWallMs;
         this.masterLatencyMs = masterLatencyMs;
+        masterLoopback = true;
     }
 
     /** Receiver side: new clock sample from the master. */
@@ -163,6 +242,7 @@ public class MultiRoomAudioPlayer {
         anchorPosMs = masterPosMs;
         anchorLocalWallMs = masterWallMs - offsetMs;
         this.masterLatencyMs = masterLatencyMs;
+        masterLoopback = false;
     }
 
     /** Drops all buffered audio (seek / pause on the master). */
@@ -181,6 +261,7 @@ public class MultiRoomAudioPlayer {
         anchorPosMs = -1;
         anchorLocalWallMs = -1;
         masterLatencyMs = 0;
+        masterLoopback = false;
         stopTrack();
         resetResampler();
         started = false;
@@ -319,7 +400,13 @@ public class MultiRoomAudioPlayer {
             if (track == null) continue; // hard resync recreated the track
 
             try {
-                byte[] out = resample(head.pcm);
+                // Play the received stream untouched. The AudioTrack's
+                // ~200 ms buffer absorbs the tiny hardware-clock skew over a
+                // whole song, and the hard re-sync handles the rare cases
+                // where it accumulates. Software resampling with a varying
+                // ratio warps the waveform (audible as vocal flutter), so
+                // it is intentionally not used for normal playback.
+                byte[] out = head.pcm;
                 applyGain(out);
                 FirEqualizer eq = firEqualizer;
                 if (eq != null) {
@@ -328,6 +415,7 @@ public class MultiRoomAudioPlayer {
                     eq.setSampleRate(sampleRate);
                     eq.process(out, channels);
                 }
+                writeCapture(out, out.length);
                 track.write(out, 0, out.length);
                 synchronized (lock) {
                     queue.poll();
@@ -403,8 +491,15 @@ public class MultiRoomAudioPlayer {
         // Compare against the *written* position (not the AudioTrack head):
         // the write must happen at "schedule - outputLatency", and the
         // AudioTrack buffer absorbs scheduling jitter.
-        long expected = anchorPosMs + (now - anchorLocalWallMs)
-                - WRITE_LEAD_MS - masterLatencyMs + probeLatencyMs() - latencyCompMs;
+        long expected;
+        if (masterLoopback) {
+            // The master's own streamer paces at real time, so the loopback
+            // written position only lags the stream by the queue span.
+            expected = anchorPosMs + (now - anchorLocalWallMs) - MASTER_LEAD_MS;
+        } else {
+            expected = anchorPosMs + (now - anchorLocalWallMs)
+                    - WRITE_LEAD_MS - masterLatencyMs + probeLatencyMs() - latencyCompMs;
+        }
         long actual = playStartPosMs + inputFramesFed * 1000L / sampleRate;
         long err = actual - expected;
 
@@ -418,8 +513,9 @@ public class MultiRoomAudioPlayer {
         // Negative feedback: a large positive err (we are ahead) slows the
         // content down; a negative err speeds it up. Keeps the error small
         // continuously instead of waiting for a hard resync.
-        ratio = 1.0 - KP * err - KI * integral;
-        ratio = Math.max(RATIO_MIN, Math.min(RATIO_MAX, ratio));
+        double target = 1.0 - KP * err - KI * integral;
+        target = Math.max(RATIO_MIN, Math.min(RATIO_MAX, target));
+        ratio += (target - ratio) * RATIO_SMOOTH;
     }
 
     private void hardResync(long expectedPosMs) {
@@ -451,6 +547,11 @@ public class MultiRoomAudioPlayer {
     private byte[] resample(byte[] pcm) {
         int frames = pcm.length / 2 / channels;
         if (frames <= 0) return pcm;
+        if (Math.abs(ratio - 1.0) < RATIO_PASSTHROUGH_EPS) {
+            // Clock is locked: copy the chunk through untouched instead of
+            // running every sample through the interpolator.
+            return pcm;
+        }
         short[] in = new short[frames * channels];
         ByteBuffer.wrap(pcm).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(in);
 
@@ -539,8 +640,13 @@ public class MultiRoomAudioPlayer {
         long now = System.currentTimeMillis();
         if (now - lastLogMs < 2000) return;
         lastLogMs = now;
-        long expected = anchorPosMs + (now - anchorLocalWallMs)
-                - WRITE_LEAD_MS - masterLatencyMs + probeLatencyMs() - latencyCompMs;
+        long expected;
+        if (masterLoopback) {
+            expected = anchorPosMs + (now - anchorLocalWallMs) - MASTER_LEAD_MS;
+        } else {
+            expected = anchorPosMs + (now - anchorLocalWallMs)
+                    - WRITE_LEAD_MS - masterLatencyMs + probeLatencyMs() - latencyCompMs;
+        }
         long actual = playStartPosMs + inputFramesFed * 1000L / sampleRate;
         long buffered = 0;
         synchronized (lock) {
