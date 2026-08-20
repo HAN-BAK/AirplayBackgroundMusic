@@ -20,6 +20,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.FileProvider;
 
 import com.airmusic.player.service.PlaybackService;
+import com.airmusic.player.util.BlurBackground;
 import com.airmusic.player.util.DiagnosticLog;
 import com.airmusic.player.util.Prefs;
 import com.airmusic.player.util.StorageHelper;
@@ -35,6 +36,7 @@ public class SettingsActivity extends BaseActivity {
     private RadioGroup radioMode;
     private Switch switchAutoPlay;
     private Switch switchShowApps;
+    private com.google.android.material.button.MaterialButton btnBlurMode;
     private SeekBar seekBalance;
     private TextView airplayStatus;
     private TextView txtStorageInfo;
@@ -62,6 +64,7 @@ public class SettingsActivity extends BaseActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
+        BlurBackground.apply(this, R.color.background);
 
         prefs = new Prefs(this);
         inputName = findViewById(R.id.input_airplay_name);
@@ -69,6 +72,7 @@ public class SettingsActivity extends BaseActivity {
         radioMode = findViewById(R.id.radio_mode);
         switchAutoPlay = findViewById(R.id.switch_auto_play);
         switchShowApps = findViewById(R.id.switch_show_apps);
+        btnBlurMode = findViewById(R.id.btn_blur_mode);
         seekBalance = findViewById(R.id.seek_balance);
         airplayStatus = findViewById(R.id.airplay_status);
         txtStorageInfo = findViewById(R.id.txt_storage_info);
@@ -105,6 +109,7 @@ public class SettingsActivity extends BaseActivity {
         switchShowApps.setChecked(prefs.isShowAppsButton());
         switchShowApps.setOnCheckedChangeListener((b, checked) ->
                 prefs.setShowAppsButton(checked));
+        setupBlurModeButton();
 
         inputName.addTextChangedListener(new TextWatcher() {
             @Override
@@ -228,6 +233,7 @@ public class SettingsActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        BlurBackground.apply(this, R.color.background);
         refreshAirPlayStatus();
         refreshStorageInfo();
         // The equalizer now uses a dedicated instance for the multi-room
@@ -323,6 +329,40 @@ public class SettingsActivity extends BaseActivity {
                     .setNegativeButton(android.R.string.cancel, null)
                     .show();
         });
+    }
+
+    private void setupBlurModeButton() {
+        updateBlurModeLabel();
+        btnBlurMode.setOnClickListener(v -> {
+            String[] modes = {Prefs.BLUR_DARK, Prefs.BLUR_OFF};
+            String[] labels = {
+                    getString(R.string.blur_mode_dark),
+                    getString(R.string.blur_mode_off)
+            };
+            String current = prefs.getBlurMode();
+            int checked = 0;
+            for (int i = 0; i < modes.length; i++) {
+                if (modes[i].equals(current)) checked = i;
+            }
+            new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle(R.string.blur_dialog_title)
+                    .setSingleChoiceItems(labels, checked, (d, which) -> {
+                        prefs.setBlurMode(modes[which]);
+                        BlurBackground.apply(SettingsActivity.this, R.color.background);
+                        d.dismiss();
+                        updateBlurModeLabel();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        });
+    }
+
+    private void updateBlurModeLabel() {
+        String mode = prefs.getBlurMode();
+        String label;
+        if (Prefs.BLUR_OFF.equals(mode)) label = getString(R.string.blur_mode_off);
+        else label = getString(R.string.blur_mode_dark);
+        btnBlurMode.setText(label);
     }
 
     private void updateLanguageLabel(com.google.android.material.button.MaterialButton btn) {

@@ -81,6 +81,10 @@
     <string name="os_qrcodegen">QR Code generator(MIT) · Project Nayuki</string>
     <string name="os_androidx">AndroidX / Material Components(Apache-2.0) · UI 구성 요소</string>
     <string name="pref_show_apps_button">재생 화면에 앱 목록 아이콘 표시</string>
+    <string name="pref_blur_background">배경 흐림</string>
+    <string name="blur_dialog_title">배경 흐림 선택</string>
+    <string name="blur_mode_dark">어둡게</string>
+    <string name="blur_mode_off">끄기</string>
     <string name="apps_open_failed">열 수 없음: %1$s</string>
     <string name="pref_equalizer">이퀄라이저(10밴드)</string>
     <string name="equalizer_title">이퀄라이저</string>

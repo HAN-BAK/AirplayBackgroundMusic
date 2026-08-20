@@ -7,6 +7,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.airmusic.player.util.LocaleHelper;
 import com.airmusic.player.service.PlaybackService;
+import com.airmusic.player.util.BlurBackground;
 
 /** Applies the user-selected UI language to every activity. */
 public abstract class BaseActivity extends AppCompatActivity {
@@ -31,5 +32,11 @@ public abstract class BaseActivity extends AppCompatActivity {
             }
             recreate();
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        BlurBackground.detach(this);
+        super.onDestroy();
     }
 }

@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.airmusic.player.library.MusicLibrary;
 import com.airmusic.player.library.Track;
 import com.airmusic.player.service.PlaybackService;
+import com.airmusic.player.util.BlurBackground;
 import com.airmusic.player.ui.TrackAdapter;
 
 import java.io.File;
@@ -33,6 +34,7 @@ public class LibraryActivity extends BaseActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_library);
+        BlurBackground.apply(this, R.color.background);
 
         txtTitle = findViewById(R.id.txt_title);
         txtSelectCount = findViewById(R.id.txt_select_count);
@@ -67,6 +69,7 @@ public class LibraryActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        BlurBackground.apply(this, R.color.background);
         loadTracks();
     }
 

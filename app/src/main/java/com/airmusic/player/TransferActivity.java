@@ -19,6 +19,7 @@ import com.airmusic.player.library.MusicLibrary;
 import com.airmusic.player.service.PlaybackService;
 import com.airmusic.player.transfer.MusicTransferServer;
 import com.airmusic.player.transfer.QrEncoder;
+import com.airmusic.player.util.BlurBackground;
 import com.airmusic.player.util.Prefs;
 
 import java.net.Inet4Address;
@@ -46,6 +47,7 @@ public class TransferActivity extends BaseActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_transfer);
+        BlurBackground.apply(this, R.color.background);
 
         findViewById(R.id.btn_back).setOnClickListener(v -> finish());
 

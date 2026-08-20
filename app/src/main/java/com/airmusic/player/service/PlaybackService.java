@@ -1759,9 +1759,10 @@ public class PlaybackService extends Service {
         state.album = localizeTrackField(track.displayAlbum(),
                 com.airmusic.player.library.Track.UNKNOWN_ALBUM, R.string.unknown_album);
         state.durationMs = (int) track.durationMs;
-        if (isCurrent) {
-            state.art = null;
-        }
+        // Keep the previous cover until the new one is ready; clearing it
+        // here made the player screen flash to the placeholder on every
+        // track switch. Tracks without embedded art clear to the placeholder
+        // once the async metadata read finishes below.
 		publish();
 
         final Track target = track;

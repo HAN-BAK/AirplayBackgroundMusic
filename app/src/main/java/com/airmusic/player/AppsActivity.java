@@ -13,6 +13,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.airmusic.player.ui.AppsAdapter;
+import com.airmusic.player.util.BlurBackground;
 
 import java.text.Collator;
 import java.util.ArrayList;
@@ -33,6 +34,7 @@ public class AppsActivity extends BaseActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_apps);
+        BlurBackground.apply(this, R.drawable.bg_main_gradient);
 
         findViewById(R.id.btn_back).setOnClickListener(v -> finish());
 

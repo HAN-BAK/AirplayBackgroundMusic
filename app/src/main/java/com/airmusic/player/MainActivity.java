@@ -32,6 +32,7 @@ import com.airmusic.player.multicast.MultiRoomManager;
 import com.airmusic.player.playback.EqAudioProcessor;
 import com.airmusic.player.service.PlaybackService;
 import com.airmusic.player.util.PlayerUiState;
+import com.airmusic.player.util.BlurBackground;
 import com.airmusic.player.util.Prefs;
 import com.airmusic.player.util.StateBus;
 
@@ -100,6 +101,7 @@ public class MainActivity extends BaseActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        BlurBackground.apply(this, R.drawable.bg_main_gradient);
         handleCaptureIntent(getIntent());
 
         albumArt = findViewById(R.id.album_art);
@@ -377,6 +379,8 @@ public class MainActivity extends BaseActivity {
     }
 
     private void render(PlayerUiState s) {
+        BlurBackground.apply(this, R.drawable.bg_main_gradient);
+
         trackTitle.setText(s.title);
         trackArtist.setText(s.artist);
         trackAlbum.setText(s.album);
@@ -394,8 +398,8 @@ public class MainActivity extends BaseActivity {
             albumArt.setImageResource(R.drawable.ic_music_note);
             if (art != null) {
                 albumArt.setImageBitmap(art);
-            }
         }
+    }
 
         if (s.source == PlayerUiState.Source.AIRPLAY) {
             sourceBadge.setText(getString(R.string.source_airplay) + " · " + s.clientName);

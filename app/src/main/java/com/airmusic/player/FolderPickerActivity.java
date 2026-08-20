@@ -26,6 +26,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
 import com.airmusic.player.library.AudioExt;
+import com.airmusic.player.util.BlurBackground;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -80,6 +81,7 @@ public class FolderPickerActivity extends BaseActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_folder_picker);
+        BlurBackground.apply(this, R.color.background);
 
         pathText = findViewById(R.id.path_text);
         statusText = findViewById(R.id.status_text);

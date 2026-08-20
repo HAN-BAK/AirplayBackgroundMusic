@@ -81,6 +81,10 @@
     <string name="os_qrcodegen">QR Code generator (MIT) · Project Nayuki</string>
     <string name="os_androidx">AndroidX / Material Components (Apache-2.0) · UI components</string>
     <string name="pref_show_apps_button">Show app list icon on the playback screen</string>
+    <string name="pref_blur_background">Background Blur</string>
+    <string name="blur_dialog_title">Choose Background Blur</string>
+    <string name="blur_mode_dark">Dark</string>
+    <string name="blur_mode_off">Off</string>
     <string name="apps_open_failed">Couldn\'t open: %1$s</string>
     <string name="pref_equalizer">Equalizer (10 bands)</string>
     <string name="equalizer_title">Equalizer</string>

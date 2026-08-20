@@ -19,6 +19,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.airmusic.player.service.PlaybackService;
 import com.airmusic.player.util.Prefs;
+import com.airmusic.player.util.BlurBackground;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -58,6 +59,7 @@ public class EqualizerActivity extends BaseActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_equalizer);
+        BlurBackground.apply(this, R.color.background);
 
         prefs = new Prefs(this);
         gains = prefs.getEqGains();

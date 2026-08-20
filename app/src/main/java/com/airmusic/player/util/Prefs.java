@@ -29,6 +29,7 @@ public final class Prefs {
     private static final String KEY_BALANCE = "balance";
     private static final String KEY_MULTICAST_DELAY_COMP = "multicast_delay_comp_ms";
     private static final String KEY_SHOW_APPS_BUTTON = "show_apps_button";
+    private static final String KEY_BLUR_MODE = "blur_mode";
     private static final String KEY_LANGUAGE = "language";
     private static final String KEY_EQ_GAINS = "eq_gains";
     private static final String KEY_EQ_PRESETS = "eq_presets";
@@ -143,6 +144,18 @@ public final class Prefs {
 
     public void setShowAppsButton(boolean enabled) {
         sp.edit().putBoolean(KEY_SHOW_APPS_BUTTON, enabled).apply();
+    }
+
+    public static final String BLUR_DARK = "dark";
+    public static final String BLUR_OFF = "off";
+
+    /** Player background blur: dark / light / off (default dark). */
+    public String getBlurMode() {
+        return sp.getString(KEY_BLUR_MODE, BLUR_DARK);
+    }
+
+    public void setBlurMode(String mode) {
+        sp.edit().putString(KEY_BLUR_MODE, mode).apply();
     }
 
     /** App UI language: "zh", "en", "ja" or "ko". */

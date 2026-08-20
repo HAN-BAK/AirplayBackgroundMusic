@@ -5,6 +5,8 @@ import android.widget.TextView;
 
 import androidx.annotation.Nullable;
 
+import com.airmusic.player.util.BlurBackground;
+
 /** Display-only "about" screen: the info rows are not interactive. */
 public class AboutActivity extends BaseActivity {
 
@@ -12,6 +14,7 @@ public class AboutActivity extends BaseActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_about);
+        BlurBackground.apply(this, R.color.background);
 
         findViewById(R.id.btn_back).setOnClickListener(v -> finish());
 
