@@ -21,13 +21,19 @@ public final class FirEqualizer {
     };
 
     /**
-     * Soft-limiter engage point. Boosts routinely push the output beyond
-     * full scale; hard-clipping those peaks produces harsh square-wave
-     * distortion that sounds like an electrical buzz. Above this threshold
-     * the output is compressed smoothly toward the ceiling instead.
+     * Lookahead limiter. EQ boosts routinely push the output beyond full
+     * scale; the old per-sample tanh waveshaper smoothed those peaks but
+     * also added harmonic distortion of its own. The limiter below instead
+     * delays the signal by a few samples, watches the peak of the incoming
+     * block and applies a stereo-linked gain reduction with a fast attack
+     * and slow release, so loud peaks are tamed without reshaping the wave.
      */
     private static final double LIMIT_THRESHOLD = 30000.0;
-    private static final double LIMIT_CEILING = 32767.0;
+    /** ~1.45 ms of lookahead at 44.1 kHz. */
+    private static final int LOOKAHEAD = 64;
+    /** Gain-reduction time constants (seconds). */
+    private static final double ATTACK_TAU_S = 0.0006;
+    private static final double RELEASE_TAU_S = 0.18;
     private static final double PI = Math.PI;
 
     /** Per-band biquad coefficients: b0, b1, b2, a1, a2 (already divided by a0). */
@@ -35,6 +41,13 @@ public final class FirEqualizer {
     /** Per-band filter state per channel: x1, x2, y1, y2. */
     private final double[][] stateL = new double[BANDS][4];
     private final double[][] stateR = new double[BANDS][4];
+    /** Lookahead delay lines (post-EQ samples before the limiter). */
+    private final double[] delayL = new double[LOOKAHEAD];
+    private final double[] delayR = new double[LOOKAHEAD];
+    private int delayPos;
+    private double limitGain = 1.0;
+    private double attackCoef = 1.0;
+    private double releaseCoef = 1.0;
 
     private int sampleRate = 44100;
     private boolean bypass;
@@ -76,12 +89,19 @@ public final class FirEqualizer {
             stateL[b][0] = stateL[b][1] = stateL[b][2] = stateL[b][3] = 0.0;
             stateR[b][0] = stateR[b][1] = stateR[b][2] = stateR[b][3] = 0.0;
         }
+        delayPos = 0;
+        limitGain = 1.0;
+        for (int i = 0; i < LOOKAHEAD; i++) {
+            delayL[i] = 0.0;
+            delayR[i] = 0.0;
+        }
     }
 
     /** (Re)computes the biquad coefficients for the current gains and rate. */
     private void rebuildKernel() {
         Log.i("FirEqualizer", "rebuild gains=" + java.util.Arrays.toString(gains)
                 + " rate=" + sampleRate);
+        updateLimiterTimeConstants();
         for (int b = 0; b < BANDS; b++) {
             double f0 = CENTER_FREQS[b];
             if (f0 >= sampleRate / 2.0 * 0.98) {
@@ -112,6 +132,11 @@ public final class FirEqualizer {
         clearHistory();
     }
 
+    private void updateLimiterTimeConstants() {
+        attackCoef = 1.0 - Math.exp(-1.0 / (sampleRate * ATTACK_TAU_S));
+        releaseCoef = 1.0 - Math.exp(-1.0 / (sampleRate * RELEASE_TAU_S));
+    }
+
     /** Applies the equalizer in place to interleaved 16-bit PCM. */
     public synchronized void process(byte[] pcm, int channels) {
         process(pcm, pcm == null ? 0 : pcm.length, channels);
@@ -134,14 +159,34 @@ public final class FirEqualizer {
             l = runBiquads(l, stateL);
             if (channels == 2) {
                 r = runBiquads(r, stateR);
+            } else {
+                r = l;
             }
-            short sl = (short) Math.max(-32768, Math.min(32767,
-                    Math.round(softLimit(l))));
+            // Push into the lookahead delay line, then read the oldest
+            // sample and apply the gain computed from the incoming peak.
+            delayL[delayPos] = l;
+            delayR[delayPos] = r;
+            delayPos = (delayPos + 1) % LOOKAHEAD;
+            double peak = 0.0;
+            for (int i = 0; i < LOOKAHEAD; i++) {
+                double p = Math.abs(delayL[i]);
+                if (p > peak) peak = p;
+                p = Math.abs(delayR[i]);
+                if (p > peak) peak = p;
+            }
+            double target = peak > LIMIT_THRESHOLD ? LIMIT_THRESHOLD / peak : 1.0;
+            if (target < limitGain) {
+                limitGain += (target - limitGain) * attackCoef;
+            } else {
+                limitGain += (target - limitGain) * releaseCoef;
+            }
+            double outL = delayL[delayPos] * limitGain;
+            double outR = delayR[delayPos] * limitGain;
+            short sl = (short) Math.max(-32768, Math.min(32767, Math.round(outL)));
             pcm[base] = (byte) (sl & 0xff);
             pcm[base + 1] = (byte) ((sl >> 8) & 0xff);
             if (channels == 2) {
-                short sr = (short) Math.max(-32768, Math.min(32767,
-                        Math.round(softLimit(r))));
+                short sr = (short) Math.max(-32768, Math.min(32767, Math.round(outR)));
                 pcm[base + 2] = (byte) (sr & 0xff);
                 pcm[base + 3] = (byte) ((sr >> 8) & 0xff);
             }
@@ -163,17 +208,6 @@ public final class FirEqualizer {
             x = y;
         }
         return x;
-    }
-
-    /** Smoothly limits a sample to the 16-bit ceiling (no hard clipping). */
-    private static double softLimit(double x) {
-        double abs = Math.abs(x);
-        if (abs <= LIMIT_THRESHOLD) {
-            return x;
-        }
-        double t = (abs - LIMIT_THRESHOLD) / (LIMIT_CEILING - LIMIT_THRESHOLD);
-        double y = LIMIT_THRESHOLD + (LIMIT_CEILING - LIMIT_THRESHOLD) * Math.tanh(t);
-        return x < 0 ? -y : y;
     }
 
     private void logCost(int frames, long nano) {

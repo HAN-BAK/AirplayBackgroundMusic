@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>BukaMusic 小红书封面</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1242px; height: 1656px; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(168deg, #1E5A8A 0%, #16304F 45%, #081120 100%);
+    color: #fff;
+    position: relative;
+  }
+  /* decorative glow */
+  .glow {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(70px);
+    opacity: .55;
+  }
+  .glow1 { width: 480px; height: 480px; background: #4FC3F7; top: -140px; right: -120px; }
+  .glow2 { width: 420px; height: 420px; background: #1E88E5; bottom: -160px; left: -140px; }
+  .wrap {
+    position: relative;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 70px 64px;
+  }
+  .logo {
+    width: 250px;
+    height: 250px;
+    border-radius: 46px;
+    box-shadow: 0 18px 46px rgba(0,0,0,.45);
+  }
+  .brand {
+    margin-top: 26px;
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: 3px;
+    color: #EAF6FF;
+    text-shadow: 0 4px 18px rgba(79,195,247,.35);
+  }
+  .tagline {
+    margin-top: 14px;
+    font-size: 22px;
+    color: #8FCBFF;
+    letter-spacing: 1px;
+  }
+  .headline {
+    margin-top: 46px;
+    font-size: 68px;
+    font-weight: 900;
+    line-height: 1.32;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+  .headline .hl {
+    color: #4FC3F7;
+  }
+  .features {
+    margin-top: 44px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px 26px;
+    width: 100%;
+  }
+  .feat {
+    background: rgba(79,195,247,.10);
+    border: 1px solid rgba(79,195,247,.28);
+    border-radius: 18px;
+    padding: 20px 24px;
+    font-size: 26px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .feat .ico { font-size: 32px; }
+  .feat .sub { display: block; font-size: 18px; font-weight: 400; color: #A8C9E8; margin-top: 2px; }
+  .badge {
+    margin-top: 46px;
+    padding: 14px 34px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #4FC3F7, #81D4FA);
+    color: #081120;
+    font-size: 26px;
+    font-weight: 800;
+    box-shadow: 0 10px 30px rgba(79,195,247,.35);
+  }
+  .foot {
+    margin-top: 34px;
+    font-size: 20px;
+    color: #7FA6C8;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+  <div class="glow glow1"></div>
+  <div class="glow glow2"></div>
+  <div class="wrap">
+    <img class="logo" src="logo.png" alt="BukaMusic">
+    <div class="brand">BukaMusic</div>
+    <div class="tagline">背景音乐 · AirPlay 接收 · 多房间同步</div>
+
+    <div class="headline">安卓盒子秒变<br><span class="hl">AirPlay 音箱</span></div>
+
+    <div class="features">
+      <div class="feat"><span class="ico">📱</span><div>iPhone 一键投送<span class="sub">还能遥控切歌 / 暂停</span></div></div>
+      <div class="feat"><span class="ico">🔊</span><div>多房间同步<span class="sub">全屋同放一首歌</span></div></div>
+      <div class="feat"><span class="ico">🎧</span><div>开机自启<span class="sub">通知栏后台常驻</span></div></div>
+      <div class="feat"><span class="ico">💾</span><div>扫码传歌<span class="sub">不用插数据线</span></div></div>
+      <div class="feat"><span class="ico">🎚️</span><div>10 段均衡器<span class="sub">预设可保存导出</span></div></div>
+      <div class="feat"><span class="ico">🌍</span><div>四语界面<span class="sub">中 / 英 / 日 / 韩</span></div></div>
+    </div>
+
+    <div class="badge">完全免费 · 开源项目</div>
+    <div class="foot">适用于安卓盒子 / 电视 / 平板 / 旧手机</div>
+  </div>
+</body>
+</html>
