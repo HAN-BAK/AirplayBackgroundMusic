@@ -253,6 +253,34 @@ public class PlaybackService extends Service {
     private Runnable fadeRunnable;
     private Runnable airFadeRunnable;
 
+    /** UI hook: fired when a receiver's transport command was acknowledged
+     *  by the master (play/pause/meta/flush/format/stop arrived). */
+    public interface ControlAckListener {
+        void onControlAck();
+    }
+
+    private final java.util.concurrent.CopyOnWriteArrayList<ControlAckListener>
+            controlAckListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    public void addControlAckListener(ControlAckListener l) {
+        if (l != null && !controlAckListeners.contains(l)) {
+            controlAckListeners.add(l);
+        }
+    }
+
+    public void removeControlAckListener(ControlAckListener l) {
+        controlAckListeners.remove(l);
+    }
+
+    private void notifyControlAck() {
+        for (ControlAckListener l : controlAckListeners) {
+            try {
+                l.onControlAck();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     private final LocalPlayer.Listener localListener = new LocalPlayer.Listener() {
         @Override
         public void onLocalTrackChanged(Track track) {
@@ -540,6 +568,9 @@ public class PlaybackService extends Service {
             state.positionMs = (int) localPlayer.getPosition();
             stopMultiRoomStreamer();
             syncMultiRoomStreamer();
+            // The stream restarted from the new position: re-anchor receivers
+            // right away so their progress matches the master's.
+            resyncReceivers();
         }
     };
 
@@ -584,6 +615,45 @@ public class PlaybackService extends Service {
     };
 
     /**
+     * Immediately re-anchors every receiver after a transport / seek / track
+     * operation: receivers drop stale buffered audio, refresh their NTP
+     * offset, then receive a fresh clock sample so the displayed progress
+     * and the audio timeline re-align instead of waiting for the next
+     * 500 ms tick with a possibly stale offset.
+     */
+    private void resyncReceivers() {
+        MultiRoomManager m = multiRoomManager;
+        if (m == null || !m.hasTargets()) return;
+        Log.i(TAG, "resyncReceivers: force NTP + flush + fresh clock");
+        m.forceTimeSync();
+        m.sendFlush();
+        // Send a clock immediately (current offset) so receivers re-anchor
+        // without waiting for the 500 ms ticker...
+        if (multiRoomStreamer != null) {
+            long masterLatency = multiRoomAudioPlayer != null
+                    ? multiRoomAudioPlayer.getOutputLatencyMs() : 0;
+            m.sendClock(multiRoomStreamer.getStreamPositionMs(), masterLatency);
+        }
+        // ...and again after the NTP round with the refreshed offset.
+        main.removeCallbacks(multiRoomResyncClock);
+        main.postDelayed(multiRoomResyncClock, 250);
+    }
+
+    /** Sends one fresh clock sample after the NTP round above completes. */
+    private final Runnable multiRoomResyncClock = new Runnable() {
+        @Override
+        public void run() {
+            MultiRoomManager m = multiRoomManager;
+            if (m == null || !m.hasTargets() || multiRoomStreamer == null) return;
+            Log.i(TAG, "resync clock sent after NTP refresh");
+            long masterLatency = multiRoomAudioPlayer != null
+                    ? multiRoomAudioPlayer.getOutputLatencyMs() : 0;
+            m.sendClock(multiRoomStreamer.getStreamPositionMs(), masterLatency);
+            m.sendTsRequests();
+        }
+    };
+
+    /**
      * Three seconds after a track switch / play command, force a quick NTP
      * round so receivers re-anchor to the new stream immediately.
      */
@@ -600,6 +670,8 @@ public class PlaybackService extends Service {
 
     private void scheduleMultiRoomCalibration() {
         main.removeCallbacks(multiRoomCalibration);
+        // Re-anchor immediately too: the 3 s pass is only a safety net.
+        resyncReceivers();
         main.postDelayed(multiRoomCalibration, 3000);
     }
 
@@ -611,6 +683,12 @@ public class PlaybackService extends Service {
             // Keep the master's queue healthy (150 ms) and let the receiver
             // pull ahead by 80 ms via the broadcast compensation below.
             multiRoomAudioPlayer.setLatencyCompensationMs(150);
+            // Master loopback delay: tuned after measurement. Keep 0 for
+            // now; the receiver queue lead was reduced instead.
+            multiRoomAudioPlayer.setMasterOutputDelayMs(0);
+            // No playout delay: the receiver's larger AudioTrack buffer
+            // aligns the heard times (tuned after measurement).
+            multiRoomAudioPlayer.setReceiverOutputDelayMs(0);
         }
         return multiRoomAudioPlayer;
     }
@@ -619,6 +697,7 @@ public class PlaybackService extends Service {
         @Override
         public void onRemoteMeta(String title, String artist, String album, long durationMs) {
             main.post(() -> {
+                notifyControlAck();
                 enterMultiRoomRemoteMode();
                 state.source = PlayerUiState.Source.REMOTE;
                 if (title != null && title.length() > 0) {
@@ -660,6 +739,7 @@ public class PlaybackService extends Service {
         @Override
         public void onRemotePlay(int positionMs) {
             main.post(() -> {
+                notifyControlAck();
                 enterMultiRoomRemoteMode();
                 state.source = PlayerUiState.Source.REMOTE;
                 state.playing = true;
@@ -680,6 +760,7 @@ public class PlaybackService extends Service {
         @Override
         public void onRemotePause() {
             main.post(() -> {
+                notifyControlAck();
                 if (state.source == PlayerUiState.Source.REMOTE) {
                     state.playing = false;
                     getMultiRoomAudioPlayer().pause();
@@ -691,6 +772,7 @@ public class PlaybackService extends Service {
         @Override
         public void onRemoteStop() {
             main.post(() -> {
+                notifyControlAck();
                 if (state.source == PlayerUiState.Source.REMOTE) {
                     exitMultiRoomRemoteMode();
                     publish();
@@ -710,6 +792,7 @@ public class PlaybackService extends Service {
         @Override
         public void onRemoteFormat(int sampleRate, int channels) {
             main.post(() -> {
+                notifyControlAck();
                 MultiRoomAudioPlayer p = getMultiRoomAudioPlayer();
                 p.setBalance(prefs.getBalance());
                 p.setFormat(sampleRate, channels);
@@ -1109,6 +1192,16 @@ public class PlaybackService extends Service {
             fadeLocalIn(1000);
             loadMetadata(localPlayer.getCurrentTrack());
         }
+        // Re-selecting a track (even the one already playing) must restart
+        // the multi-room stream too: the song-switch fade gate is disabled
+        // while multi-room owns the output, so onLocalTrackChanged is not
+        // fired and the old stream would keep playing from the old position
+        // while the UI jumps to 0.
+        if (multiRoomManager != null && multiRoomManager.hasTargets()) {
+            multiRoomManager.sendFlush();
+            stopMultiRoomStreamer();
+            syncMultiRoomStreamer();
+        }
         scheduleMultiRoomCalibration();
     }
 
@@ -1146,6 +1239,8 @@ public class PlaybackService extends Service {
                 localPlayer.setMasterGain(0f);
                 localPlayer.play();
                 fadeLocalIn();
+                // Resume: re-anchor receivers to the current position.
+                resyncReceivers();
             }
             return;
         }

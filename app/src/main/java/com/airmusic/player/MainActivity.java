@@ -57,16 +57,24 @@ public class MainActivity extends BaseActivity {
     private TextView positionText;
     private TextView durationText;
     private ImageButton btnPlay;
+    private ImageButton btnNext;
+    private ImageButton btnPrev;
     private ImageButton btnMulticast;
     private ImageButton btnLibrary;
     private ImageButton btnApps;
     private ProgressBar multicastProgress;
+    private ProgressBar playProgress;
+    private ProgressBar nextProgress;
+    private ProgressBar prevProgress;
+    private ImageView volumeIcon;
     private SeekBar seekBar;
     private SeekBar volumeSeek;
     private View seekRow;
 
     private boolean seeking;
     private PlayerUiState lastState;
+    /** True while a receiver transport command is waiting on the master. */
+    private boolean controlPending;
     private AudioManager audioManager;
     private ContentObserver volumeObserver;
     private final Handler volumePollHandler = new Handler(Looper.getMainLooper());
@@ -86,6 +94,12 @@ public class MainActivity extends BaseActivity {
             btnMulticast.setVisibility(View.VISIBLE);
         }
     };
+
+    /** Safety net: drop the loading spinner if the master never replies. */
+    private final Runnable controlTimeoutRunnable = this::hideControlSpinners;
+
+    private final PlaybackService.ControlAckListener controlAckListener =
+            this::hideControlSpinners;
 
     private final StateBus.Listener stateListener = state -> {
         lastState = state;
@@ -113,9 +127,15 @@ public class MainActivity extends BaseActivity {
         positionText = findViewById(R.id.position_text);
         durationText = findViewById(R.id.duration_text);
         btnPlay = findViewById(R.id.btn_play);
+        btnNext = findViewById(R.id.btn_next);
+        btnPrev = findViewById(R.id.btn_prev);
         btnMulticast = findViewById(R.id.btn_multicast);
         btnLibrary = findViewById(R.id.btn_library);
         multicastProgress = findViewById(R.id.multicast_progress);
+        playProgress = findViewById(R.id.play_progress);
+        nextProgress = findViewById(R.id.next_progress);
+        prevProgress = findViewById(R.id.prev_progress);
+        volumeIcon = findViewById(R.id.volume_icon);
         btnApps = findViewById(R.id.btn_apps);
         seekBar = findViewById(R.id.seek_bar);
         volumeSeek = findViewById(R.id.volume_seek);
@@ -165,15 +185,27 @@ public class MainActivity extends BaseActivity {
         });
         findViewById(R.id.btn_prev).setOnClickListener(v -> {
             PlaybackService service = PlaybackService.getInstance();
-            if (service != null) service.previous();
+            if (service != null) {
+                service.addControlAckListener(controlAckListener);
+                if (isReceiverMode()) showControlSpinner(btnPrev, prevProgress);
+                service.previous();
+            }
         });
         findViewById(R.id.btn_next).setOnClickListener(v -> {
             PlaybackService service = PlaybackService.getInstance();
-            if (service != null) service.next();
+            if (service != null) {
+                service.addControlAckListener(controlAckListener);
+                if (isReceiverMode()) showControlSpinner(btnNext, nextProgress);
+                service.next();
+            }
         });
         btnPlay.setOnClickListener(v -> {
             PlaybackService service = PlaybackService.getInstance();
-            if (service != null) service.togglePlay();
+            if (service != null) {
+                service.addControlAckListener(controlAckListener);
+                if (isReceiverMode()) showControlSpinner(btnPlay, playProgress);
+                service.togglePlay();
+            }
         });
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -199,7 +231,50 @@ public class MainActivity extends BaseActivity {
         });
 
         PlaybackService.start(this);
+        PlaybackService service = PlaybackService.getInstance();
+        if (service != null) {
+            service.addControlAckListener(controlAckListener);
+        }
         requestPermissionsIfNeeded();
+    }
+
+    /** True while this device is receiving a multi-room stream. */
+    private boolean isReceiverMode() {
+        return lastState != null
+                && lastState.source == PlayerUiState.Source.REMOTE;
+    }
+
+    /** Shows a loading spinner on a transport button while the receiver's
+     *  command is waiting for the master to execute and broadcast back. */
+    private void showControlSpinner(View icon, ProgressBar spinner) {
+        controlPending = true;
+        if (icon == btnPlay) {
+            // Keep the circular sky-blue frame visible; hide only the glyph.
+            btnPlay.setImageResource(android.R.color.transparent);
+        } else {
+            icon.setVisibility(View.INVISIBLE);
+        }
+        spinner.setVisibility(View.VISIBLE);
+        volumePollHandler.removeCallbacks(controlTimeoutRunnable);
+        volumePollHandler.postDelayed(controlTimeoutRunnable, 4000);
+    }
+
+    private void hideControlSpinners() {
+        if (!controlPending) return;
+        controlPending = false;
+        volumePollHandler.removeCallbacks(controlTimeoutRunnable);
+        if (playProgress != null) playProgress.setVisibility(View.GONE);
+        if (nextProgress != null) nextProgress.setVisibility(View.GONE);
+        if (prevProgress != null) prevProgress.setVisibility(View.GONE);
+        if (btnPlay != null) {
+            btnPlay.setVisibility(View.VISIBLE);
+            if (lastState != null) {
+                btnPlay.setImageResource(
+                        lastState.playing ? R.drawable.ic_pause : R.drawable.ic_play);
+            }
+        }
+        if (btnNext != null) btnNext.setVisibility(View.VISIBLE);
+        if (btnPrev != null) btnPrev.setVisibility(View.VISIBLE);
     }
 
     /** Binds the bottom-bar slider to the system media volume. */
@@ -209,12 +284,14 @@ public class MainActivity extends BaseActivity {
 
         volumeSeek.setMax(audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
         volumeSeek.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+        updateVolumeIcon(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
         volumeSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (fromUser) {
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0);
                 }
+                updateVolumeIcon(progress);
             }
 
             @Override
@@ -235,6 +312,7 @@ public class MainActivity extends BaseActivity {
                 if (volumeSeek.getProgress() != current) {
                     volumeSeek.setProgress(current);
                 }
+                updateVolumeIcon(current);
             }
         };
         getContentResolver().registerContentObserver(
@@ -247,6 +325,15 @@ public class MainActivity extends BaseActivity {
             if (volumeSeek.getProgress() != current) {
                 volumeSeek.setProgress(current);
             }
+            updateVolumeIcon(current);
+        }
+    }
+
+    /** Switches the slider's leading icon to the mute glyph at volume 0. */
+    private void updateVolumeIcon(int volume) {
+        if (volumeIcon != null) {
+            volumeIcon.setImageResource(
+                    volume <= 0 ? R.drawable.ic_volume_mute : R.drawable.ic_volume);
         }
     }
 
@@ -315,6 +402,11 @@ public class MainActivity extends BaseActivity {
     protected void onDestroy() {
         super.onDestroy();
         volumePollHandler.removeCallbacks(volumePoll);
+        volumePollHandler.removeCallbacks(controlTimeoutRunnable);
+        PlaybackService service = PlaybackService.getInstance();
+        if (service != null) {
+            service.removeControlAckListener(controlAckListener);
+        }
         if (volumeObserver != null) {
             try {
                 getContentResolver().unregisterContentObserver(volumeObserver);
@@ -384,6 +476,12 @@ public class MainActivity extends BaseActivity {
     private void render(PlayerUiState s) {
         BlurBackground.apply(this, R.drawable.bg_main_gradient);
 
+        // Leaving receiver mode (disconnect / AirPlay takes over) should
+        // never leave a transport loading spinner stuck on screen.
+        if (s.source != PlayerUiState.Source.REMOTE) {
+            hideControlSpinners();
+        }
+
         trackTitle.setText(s.title);
         trackArtist.setText(s.artist);
         trackAlbum.setText(s.album);
@@ -414,7 +512,9 @@ public class MainActivity extends BaseActivity {
             sourceBadge.setText(R.string.source_idle);
         }
 
-        btnPlay.setImageResource(s.playing ? R.drawable.ic_pause : R.drawable.ic_play);
+        if (!(controlPending && playProgress.getVisibility() == View.VISIBLE)) {
+            btnPlay.setImageResource(s.playing ? R.drawable.ic_pause : R.drawable.ic_play);
+        }
         btnPlay.setContentDescription(getString(s.playing ? R.string.pause : R.string.play));
 
         if (s.source == PlayerUiState.Source.AIRPLAY) {

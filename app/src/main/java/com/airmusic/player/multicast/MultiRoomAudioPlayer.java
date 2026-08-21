@@ -92,15 +92,32 @@ public class MultiRoomAudioPlayer {
     }
 
     private static final int MAX_BUFFER_MS = 2000;
-    /** Initial software buffer before playback starts (absorbs jitter). */
-    private static final int LEAD_MS = 250;
+    /** Initial software buffer before playback starts (absorbs jitter).
+     *  Kept small so the received stream is heard with minimal extra delay;
+     *  a large queue made the receiver hear ~190 ms later than the master. */
+    private static final int LEAD_MS = 120;
+    /**
+     * Receiver's initial write-ahead. The receiver only reaches the aligned
+     * steady state once its AudioTrack buffer is full (a pause/resume does
+     * exactly that); starting with this much queued audio fills the buffer
+     * immediately so the heard time matches the master from the start.
+     */
+    private static final int RECEIVER_LEAD_MS = 90;
+    /**
+     * Master-loopback queue bound. A decode burst at stream start can leave
+     * hundreds of ms of stale lead-in queued up, which delays the master's
+     * heard output and makes it unstable across sessions (and makes the
+     * receivers sound "ahead"). Old lead-in chunks are dropped to keep the
+     * master's queue at a small, stable size.
+     */
+    private static final int MASTER_QUEUE_TARGET_MS = 100;
     /**
      * How far behind the arrival stream the writer targets. The paced stream
      * only arrives at real time, so the writer can never get ahead of it;
      * keeping the write position WRITE_LEAD_MS behind the newest arrival
      * leaves the resampler room to speed up or slow down without starving.
      */
-    private static final int WRITE_LEAD_MS = 250;
+    private static final int WRITE_LEAD_MS = 120;
     /**
      * Master-loopback target lead. The master's own streamer paces chunks at
      * real time, so the loopback player's written position can only sit a
@@ -149,6 +166,21 @@ public class MultiRoomAudioPlayer {
     private volatile long masterLatencyMs = 0;
     /** Fixed receiver-side output-latency compensation (no UI). */
     private volatile long latencyCompMs;
+    /**
+     * Extra playout delay for the master's loopback. Receivers hear the
+     * stream a bit later than the master (network + their own output
+     * latency), so the master intentionally plays this far behind the
+     * stream to keep all devices aligned. Passthrough playback cannot
+     * compensate this on the receiver side (chunks arrive at real time).
+     */
+    private volatile long masterOutputDelayMs;
+    /**
+     * Extra playout delay for the receiver. After the rate calibration the
+     * devices drift-free but the receiver can sit a fixed offset ahead of
+     * the master; holding each chunk this long before writing re-aligns the
+     * heard times.
+     */
+    private volatile long receiverOutputDelayMs;
 
     private float balance;
     private volatile float outputGain = 1f;
@@ -161,6 +193,17 @@ public class MultiRoomAudioPlayer {
     private double phaseRel;
     private double ratio = 1.0;
     private double integral;
+    /**
+     * Fixed compensation for the device's hardware sample-clock error
+     * (e.g. a tablet whose AudioTrack runs ~1.7% fast). Auto-calibrated
+     * every few seconds from the measured content-vs-wall rate; the PI
+     * controller then only handles the small residual drift, so the
+     * resampler stays smooth instead of jumping.
+     */
+    private double deviceRateComp = 1.0;
+    private long calibStartWallMs;
+    private long calibStartPosMs;
+    private long lastWrittenPosMs;
     private long playStartPosMs = -1;
     private long inputFramesFed;
     private long outputFramesWritten;
@@ -245,12 +288,17 @@ public class MultiRoomAudioPlayer {
         masterLoopback = false;
     }
 
-    /** Drops all buffered audio (seek / pause on the master). */
+    /** Drops all buffered audio (seek / track switch on the master). The
+     *  old timeline is dropped too so the next clock sample re-anchors the
+     *  player cleanly at the new position instead of continuing stale
+     *  accounting. */
     public void flush() {
         synchronized (lock) {
             queue.clear();
             lock.notifyAll();
         }
+        anchorPosMs = -1;
+        anchorLocalWallMs = -1;
     }
 
     /** Full stream reset: queue, anchor, track and resampler. */
@@ -314,6 +362,16 @@ public class MultiRoomAudioPlayer {
         latencyCompMs = Math.max(-500, Math.min(500, ms));
     }
 
+    /** Master-loopback extra playout delay (see {@link #masterOutputDelayMs}). */
+    public void setMasterOutputDelayMs(long ms) {
+        masterOutputDelayMs = Math.max(0, Math.min(1000, ms));
+    }
+
+    /** Receiver-loop extra playout delay (see {@link #receiverOutputDelayMs}). */
+    public void setReceiverOutputDelayMs(long ms) {
+        receiverOutputDelayMs = Math.max(0, Math.min(1000, ms));
+    }
+
     public void onChunk(byte[] pcm, long posMs) {
         if (!running || pcm == null || pcm.length == 0) return;
         synchronized (lock) {
@@ -363,7 +421,8 @@ public class MultiRoomAudioPlayer {
                 }
                 if (!started) {
                     Chunk last = lastInQueue();
-                    if (last == null || last.posMs - head.posMs < LEAD_MS) {
+                    int lead = masterLoopback ? LEAD_MS : RECEIVER_LEAD_MS;
+                    if (last == null || last.posMs - head.posMs < lead) {
                         try {
                             lock.wait(20);
                         } catch (InterruptedException e) {
@@ -376,6 +435,32 @@ public class MultiRoomAudioPlayer {
                     inputFramesFed = 0;
                     outputFramesWritten = 0;
                     resetResampler();
+                }
+                if (started) {
+                    // Bound the queue on every role so the heard delay stays
+                    // small and stable: the master drops the decode burst
+                    // lead-in, the receiver drops excess network backlog.
+                    Chunk last = lastInQueue();
+                    boolean trimmed = false;
+                    int target = masterLoopback
+                            ? MASTER_QUEUE_TARGET_MS : RECEIVER_LEAD_MS;
+                    while (last != null && queue.size() > 1
+                            && last.posMs - queue.peek().posMs
+                            > target) {
+                        Chunk dropped = queue.poll();
+                        Log.i(TAG, (masterLoopback ? "master" : "receiver")
+                                + " dropping stale lead-in "
+                                + dropped.posMs + "ms");
+                        trimmed = true;
+                        last = lastInQueue();
+                    }
+                    if (trimmed) {
+                        head = queue.peek();
+                        playStartPosMs = head != null ? head.posMs : playStartPosMs;
+                        inputFramesFed = 0;
+                        outputFramesWritten = 0;
+                        resetResampler();
+                    }
                 }
             }
 
@@ -399,13 +484,14 @@ public class MultiRoomAudioPlayer {
             updateController();
             if (track == null) continue; // hard resync recreated the track
 
+            maybeCalibrateRate();
+
             try {
-                // Play the received stream untouched. The AudioTrack's
-                // ~200 ms buffer absorbs the tiny hardware-clock skew over a
-                // whole song, and the hard re-sync handles the rare cases
-                // where it accumulates. Software resampling with a varying
-                // ratio warps the waveform (audible as vocal flutter), so
-                // it is intentionally not used for normal playback.
+                // Play the received stream untouched: clean, correct pitch
+                // (no resampling). Device-rate mismatch is measured by the
+                // calibration only for diagnostics; alignment comes from the
+                // AudioTrack buffer sizes, not from a resampler that warps
+                // the waveform.
                 byte[] out = head.pcm;
                 applyGain(out);
                 FirEqualizer eq = firEqualizer;
@@ -424,6 +510,7 @@ public class MultiRoomAudioPlayer {
                 inputFramesFed += frames;
                 outputFramesWritten += out.length / 2 / channels;
                 writtenChunks++;
+                lastWrittenPosMs = head.posMs;
                 maybeLog(head.posMs);
             } catch (Throwable t) {
                 Log.w(TAG, "write failed", t);
@@ -440,7 +527,11 @@ public class MultiRoomAudioPlayer {
                 ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
         int minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask,
                 AudioFormat.ENCODING_PCM_16BIT);
-        int bufSize = Math.max(minBuf * 2, sampleRate * 2 * channels / 10); // ~100 ms
+        // Keep the AudioTrack buffer small (~100 ms) on every role so the
+        // inherent output delay is the same on the master and the receiver;
+        // alignment then comes from the small initial lead only.
+        int bufSize = Math.max(minBuf * 2,
+                sampleRate * 2 * channels / 10); // ~100 ms
         try {
             AudioTrack t = new AudioTrack(
                     new AudioAttributes.Builder()
@@ -537,6 +628,40 @@ public class MultiRoomAudioPlayer {
         phaseRel = 0.0;
         ratio = 1.0;
         integral = 0.0;
+        calibStartWallMs = 0;
+        calibStartPosMs = 0;
+    }
+
+    /**
+     * Measures the receiver's content-vs-wall rate from the stream positions
+     * actually written (a long window averages out the writer's bursty
+     * AudioTrack writes) and folds it into {@link #deviceRateComp} so the
+     * resampler compensates the hardware sample-clock error instead of the
+     * PI controller fighting it.
+     */
+    private void maybeCalibrateRate() {
+        if (masterLoopback) return;
+        long now = System.currentTimeMillis();
+        if (calibStartWallMs == 0) {
+            calibStartWallMs = now;
+            calibStartPosMs = lastWrittenPosMs;
+            return;
+        }
+        long dt = now - calibStartWallMs;
+        if (dt < 30000) return;
+        long dp = lastWrittenPosMs - calibStartPosMs;
+        double rate = dp / (double) dt;
+        if (rate > 0.8 && rate < 1.2) {
+            // Half-step toward the exact compensation to avoid hunting.
+            double target = deviceRateComp / rate;
+            deviceRateComp += (target - deviceRateComp) * 0.5;
+            deviceRateComp = Math.max(0.9, Math.min(1.1, deviceRateComp));
+            Log.i(TAG, "device rate " + String.format(java.util.Locale.US,
+                    "%.4f", rate) + " -> comp " + String.format(java.util.Locale.US,
+                    "%.4f", deviceRateComp) + " (30s window)");
+        }
+        calibStartWallMs = now;
+        calibStartPosMs = lastWrittenPosMs;
     }
 
     /**
@@ -544,10 +669,10 @@ public class MultiRoomAudioPlayer {
      * boundaries and a fractional phase so the output rate stays exact even
      * though input arrives in arbitrary-size chunks.
      */
-    private byte[] resample(byte[] pcm) {
+    private byte[] resample(byte[] pcm, double effRatio) {
         int frames = pcm.length / 2 / channels;
         if (frames <= 0) return pcm;
-        if (Math.abs(ratio - 1.0) < RATIO_PASSTHROUGH_EPS) {
+        if (Math.abs(effRatio - 1.0) < RATIO_PASSTHROUGH_EPS) {
             // Clock is locked: copy the chunk through untouched instead of
             // running every sample through the interpolator.
             return pcm;
@@ -578,7 +703,7 @@ public class MultiRoomAudioPlayer {
                 out[outFrames * channels + c] = (short) Math.round(a + (b - a) * frac);
             }
             outFrames++;
-            phaseAbs += ratio;
+            phaseAbs += effRatio;
             if (outFrames >= maxOutFrames) break;
         }
 
