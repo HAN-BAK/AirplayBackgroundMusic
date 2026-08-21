@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.util.TypedValue;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
@@ -158,6 +159,7 @@ public class MainActivity extends BaseActivity {
                 lp.height = size;
                 albumArt.setLayoutParams(lp);
             }
+            compactForSmallScreens();
         });
 
         findViewById(R.id.btn_settings).setOnClickListener(v ->
@@ -236,6 +238,59 @@ public class MainActivity extends BaseActivity {
             service.addControlAckListener(controlAckListener);
         }
         requestPermissionsIfNeeded();
+    }
+
+    /** Compacts the right panel on very short screens (e.g. 4:3 mini boxes)
+     *  so the transport controls and the progress bar stay visible. Screens
+     *  as tall as the reference TV box keep the original layout untouched. */
+    private void compactForSmallScreens() {
+        View rightPanel = findViewById(R.id.right_panel);
+        if (rightPanel == null) return;
+        float d = getResources().getDisplayMetrics().density;
+        int heightDp = Math.round(rightPanel.getHeight() / d);
+        if (heightDp >= 360) return; // box-sized UI unchanged
+        boolean tiny = heightDp < 250; // very short screens (PA03 class)
+        rightPanel.setPadding(Math.round(36 * d),
+                Math.round((tiny ? 6 : 12) * d),
+                Math.round(24 * d), 0);
+        trackTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, tiny ? 10 : 15);
+        trackTitle.setMaxLines(1);
+        trackArtist.setTextSize(TypedValue.COMPLEX_UNIT_SP, tiny ? 9 : 12);
+        trackAlbum.setTextSize(TypedValue.COMPLEX_UNIT_SP, tiny ? 8 : 11);
+        int badgePad = Math.round((tiny ? 6 : 10) * d);
+        int badgePadV = Math.round((tiny ? 0 : 2) * d);
+        sourceBadge.setPadding(badgePad, badgePadV, badgePad, badgePadV);
+        if (tiny) {
+            ViewGroup.MarginLayoutParams mlp =
+                    (ViewGroup.MarginLayoutParams) sourceBadge.getLayoutParams();
+            mlp.topMargin = Math.round(2 * d);
+            sourceBadge.setLayoutParams(mlp);
+        }
+        seekBar.getLayoutParams().height =
+                Math.round((tiny ? 18 : 34) * d);
+        if (tiny) {
+            positionText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 8);
+            durationText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 8);
+        }
+        int play = Math.round((tiny ? 36 : 50) * d);
+        int side = Math.round((tiny ? 30 : 40) * d);
+        btnPlay.getLayoutParams().width = play;
+        btnPlay.getLayoutParams().height = play;
+        btnPlay.setPadding(Math.round(8 * d), Math.round(8 * d),
+                Math.round(8 * d), Math.round(8 * d));
+        btnPrev.getLayoutParams().width = side;
+        btnPrev.getLayoutParams().height = side;
+        btnNext.getLayoutParams().width = side;
+        btnNext.getLayoutParams().height = side;
+        if (tiny) {
+            View playWrap = (View) btnPlay.getParent();
+            if (playWrap != null) {
+                ViewGroup.MarginLayoutParams mlp =
+                        (ViewGroup.MarginLayoutParams) playWrap.getLayoutParams();
+                mlp.setMargins(Math.round(8 * d), 0, Math.round(8 * d), 0);
+                playWrap.setLayoutParams(mlp);
+            }
+        }
     }
 
     /** True while this device is receiving a multi-room stream. */

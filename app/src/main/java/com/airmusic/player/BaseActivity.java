@@ -8,6 +8,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 
 import androidx.annotation.Nullable;
@@ -44,6 +45,10 @@ public abstract class BaseActivity extends AppCompatActivity {
     /** Hides the status bar (immersive); swiping it back shows it briefly. */
     private void hideStatusBar() {
         try {
+            // Classic fullscreen flag: hides the status bar on every API
+            // level (Android 6.0 devices like PA03 ignore the immersive
+            // flags alone, leaving a bar that shrinks the 16:9 content).
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             if (Build.VERSION.SDK_INT >= 30) {
                 WindowInsetsController controller =
                         getWindow().getInsetsController();

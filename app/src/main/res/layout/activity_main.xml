@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
@@ -11,7 +11,7 @@
         android:layout_height="match_parent"
         android:orientation="vertical">
 
-    <!-- 主内容：左封面，右信息 + 播放控制 -->
+    <!-- 涓诲唴瀹癸細宸﹀皝闈紝鍙充俊鎭?+ 鎾斁鎺у埗 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -19,7 +19,7 @@
         android:baselineAligned="false"
         android:orientation="horizontal">
 
-        <!-- 左侧：专辑封面（宽度随封面自适应，上下居中，与播放组件对齐） -->
+        <!-- 宸︿晶锛氫笓杈戝皝闈紙瀹藉害闅忓皝闈㈣嚜閫傚簲锛屼笂涓嬪眳涓紝涓庢挱鏀剧粍浠跺榻愶級 -->
         <LinearLayout
             android:id="@+id/left_panel"
             android:layout_width="wrap_content"
@@ -44,8 +44,9 @@
                 app:srcCompat="@drawable/ic_music_note" />
         </LinearLayout>
 
-        <!-- 右侧：歌曲信息在上，播放控制居中（封面变大后相应右移） -->
+        <!-- 鍙充晶锛氭瓕鏇蹭俊鎭湪涓婏紝鎾斁鎺у埗灞呬腑锛堝皝闈㈠彉澶у悗鐩稿簲鍙崇Щ锛?-->
         <LinearLayout
+            android:id="@+id/right_panel"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="58"
@@ -103,7 +104,7 @@
                 android:textColor="@color/text_primary"
                 android:textSize="13sp" />
 
-            <!-- 播放组件：在右侧剩余空间中垂直居中 -->
+            <!-- 鎾斁缁勪欢锛氬湪鍙充晶鍓╀綑绌洪棿涓瀭鐩村眳涓?-->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
@@ -164,7 +165,7 @@
                             android:id="@+id/btn_prev"
                             android:layout_width="match_parent"
                             android:layout_height="match_parent"
-                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:background="@android:color/transparent"
                             android:contentDescription="@string/previous"
                             android:src="@drawable/ic_prev"
                             android:tint="@color/text_primary" />
@@ -211,7 +212,7 @@
                             android:id="@+id/btn_next"
                             android:layout_width="match_parent"
                             android:layout_height="match_parent"
-                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:background="@android:color/transparent"
                             android:contentDescription="@string/next"
                             android:src="@drawable/ic_next"
                             android:tint="@color/text_primary" />
@@ -229,7 +230,7 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- 底部栏：应用名 + 曲库 + 设置 + 应用 -->
+    <!-- 搴曢儴鏍忥細搴旂敤鍚?+ 鏇插簱 + 璁剧疆 + 搴旂敤 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -249,7 +250,7 @@
                 android:layout_width="44dp"
                 android:layout_height="44dp"
                 android:layout_gravity="center"
-                android:background="?attr/selectableItemBackgroundBorderless"
+                android:background="@android:color/transparent"
                 android:contentDescription="@string/multicast"
                 android:src="@drawable/ic_multicast"
                 android:tint="@color/accent" />
@@ -310,7 +311,7 @@
             android:id="@+id/btn_library"
             android:layout_width="44dp"
             android:layout_height="44dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
+            android:background="@android:color/transparent"
             android:contentDescription="@string/library"
             android:src="@drawable/ic_folder"
             android:tint="@color/accent" />
@@ -319,7 +320,7 @@
             android:id="@+id/btn_settings"
             android:layout_width="44dp"
             android:layout_height="44dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
+            android:background="@android:color/transparent"
             android:contentDescription="@string/settings"
             android:src="@drawable/ic_settings"
             android:tint="@color/accent" />
@@ -328,7 +329,7 @@
             android:id="@+id/btn_apps"
             android:layout_width="44dp"
             android:layout_height="44dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
+            android:background="@android:color/transparent"
             android:contentDescription="@string/apps"
             android:src="@drawable/ic_apps"
             android:tint="@color/accent" />
